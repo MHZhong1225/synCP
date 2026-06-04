@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.conformal import classwise_quantiles, conformal_quantile, covered, groupwise_quantiles, observable_uncertainty, score_matrix_from_probs, true_label_scores
-from core.metrics import evaluate_classwise_model, evaluate_groupwise_model, evaluate_threshold_model
+from core.metrics import evaluate_classwise_model, evaluate_classifier, evaluate_groupwise_model, evaluate_threshold_model
 from core.progress import progress
 from core.rectification import fit_batch_gcp, fit_pool_mvp, fit_slice_quantile, fit_standard
 from data.synthetic import make_splits, make_synthetic_medical_data, predict_and_embed, train_classifier
@@ -159,6 +159,13 @@ def main() -> None:
     test_observed_scores = observed_uncertainty[test_idx]
     test_pool_scores = probs[test_idx]
     eval_observed_scores = test_pool_scores
+    classification_metrics = evaluate_classifier(
+        probs[test_idx],
+        data.y[test_idx],
+        class_names=[str(label) for label in range(SYNTHETIC_CLASSES)],
+        known_group=data.known_group[test_idx],
+    )
+    write_results(classification_metrics, args.outdir / "classification_metrics.csv")
 
     rows = []
     diagnostic_frames = []

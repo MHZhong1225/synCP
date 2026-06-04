@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import warnings
 
 import numpy as np
 import pandas as pd
 from scipy.stats import binom
+from sklearn.metrics import accuracy_score, average_precision_score, balanced_accuracy_score, f1_score, precision_recall_fscore_support, roc_auc_score
+from sklearn.preprocessing import label_binarize
 
 from core.conformal import covered, covered_classwise, set_sizes, set_sizes_classwise, thresholds_from_groups, true_label_scores
 from core.rectification import ThresholdModel
@@ -56,6 +59,112 @@ def diagnostics_to_frame(diags: list[SliceDiagnostics]) -> pd.DataFrame:
     if not diags:
         return pd.DataFrame(columns=["method", "name", "size", "miscoverage", "enrichment"])
     return pd.DataFrame([asdict(d) for d in diags])
+
+
+def evaluate_classifier(
+    probs: np.ndarray,
+    y: np.ndarray,
+    class_names: list[str] | None = None,
+    known_group: np.ndarray | None = None,
+) -> pd.DataFrame:
+    predicted = probs.argmax(axis=1)
+    rows = [_classification_summary_row("overall", "all", probs, y, predicted)]
+    rows.extend(_class_rows(y, predicted, class_names, probs.shape[1]))
+    if known_group is not None:
+        rows.extend(_group_rows(probs, y, predicted, known_group))
+    return pd.DataFrame(rows)
+
+
+def _classification_summary_row(
+    subset: str,
+    group: str,
+    probs: np.ndarray,
+    y: np.ndarray,
+    predicted: np.ndarray,
+) -> dict[str, float | int | str]:
+    return {
+        "subset": subset,
+        "group": group,
+        "n": int(len(y)),
+        "accuracy": float(accuracy_score(y, predicted)),
+        "balanced_accuracy": _safe_metric(lambda: balanced_accuracy_score(y, predicted)),
+        "macro_f1": _safe_metric(lambda: f1_score(y, predicted, average="macro", zero_division=0)),
+        "weighted_f1": _safe_metric(lambda: f1_score(y, predicted, average="weighted", zero_division=0)),
+        "auroc": _safe_metric(lambda: _roc_auc(y, probs)),
+        "auprc": _safe_metric(lambda: _average_precision(y, probs)),
+        "precision": float("nan"),
+        "recall": float("nan"),
+        "f1": float("nan"),
+    }
+
+
+def _class_rows(
+    y: np.ndarray,
+    predicted: np.ndarray,
+    class_names: list[str] | None,
+    num_classes: int,
+) -> list[dict[str, float | int | str]]:
+    labels = np.arange(num_classes)
+    precision, recall, f1, support = precision_recall_fscore_support(y, predicted, labels=labels, zero_division=0)
+    names = class_names or [str(label) for label in labels]
+    return [
+        {
+            "subset": "class",
+            "group": str(names[label]),
+            "n": int(support[label]),
+            "accuracy": float("nan"),
+            "balanced_accuracy": float("nan"),
+            "macro_f1": float("nan"),
+            "weighted_f1": float("nan"),
+            "auroc": float("nan"),
+            "auprc": float("nan"),
+            "precision": float(precision[label]),
+            "recall": float(recall[label]),
+            "f1": float(f1[label]),
+        }
+        for label in labels
+    ]
+
+
+def _group_rows(
+    probs: np.ndarray,
+    y: np.ndarray,
+    predicted: np.ndarray,
+    known_group: np.ndarray,
+) -> list[dict[str, float | int | str]]:
+    rows = []
+    for group in np.unique(known_group):
+        mask = known_group == group
+        if not mask.any():
+            continue
+        rows.append(_classification_summary_row("known_group", str(group), probs[mask], y[mask], predicted[mask]))
+    return rows
+
+
+def _roc_auc(y: np.ndarray, probs: np.ndarray) -> float:
+    if len(np.unique(y)) < 2:
+        return float("nan")
+    if probs.shape[1] == 2:
+        return float(roc_auc_score(y, probs[:, 1]))
+    return float(roc_auc_score(y, probs, multi_class="ovr", average="macro"))
+
+
+def _average_precision(y: np.ndarray, probs: np.ndarray) -> float:
+    if len(np.unique(y)) < 2:
+        return float("nan")
+    if probs.shape[1] == 2:
+        return float(average_precision_score(y, probs[:, 1]))
+    y_binary = label_binarize(y, classes=np.arange(probs.shape[1]))
+    return float(average_precision_score(y_binary, probs, average="macro"))
+
+
+def _safe_metric(metric) -> float:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            return float(metric())
+    except ValueError:
+        return float("nan")
 
 
 def evaluate_classwise_model(

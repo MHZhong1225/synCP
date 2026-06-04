@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from core.conformal import classwise_quantiles, conformal_quantile, covered, groupwise_quantiles, observable_uncertainty, score_matrix_from_probs, true_label_scores
-from core.metrics import evaluate_classwise_model, evaluate_groupwise_model, evaluate_threshold_model
+from core.metrics import evaluate_classwise_model, evaluate_classifier, evaluate_groupwise_model, evaluate_threshold_model
 from core.progress import progress
 from core.rectification import fit_batch_gcp, fit_pool_mvp, fit_slice_quantile, fit_standard
 from data.images import load_imagefolder_experiment, load_nih_experiment, load_rsna_breast_experiment, predict_image_dataset, train_image_classifier
@@ -116,13 +116,13 @@ def main() -> None:
         _run_multiseed(args)
         return
 
-    summary = run_experiment(args, show_progress=True)
+    summary = run_experiment(args, show_progress=True, write_classification=True)
     cleaned = write_results(summary, args.outdir / "summary.csv")
     print_results(cleaned)
     print(f"\nwrote: {args.outdir / 'summary.csv'}")
 
 
-def run_experiment(args: argparse.Namespace, show_progress: bool = True) -> pd.DataFrame:
+def run_experiment(args: argparse.Namespace, show_progress: bool = True, write_classification: bool = False) -> pd.DataFrame:
     args.outdir.mkdir(parents=True, exist_ok=True)
     device = _resolve_device(args.device, args.cuda)
     if show_progress:
@@ -170,6 +170,8 @@ def run_experiment(args: argparse.Namespace, show_progress: bool = True) -> pd.D
     test_observed_scores = observed_uncertainty[test_idx]
     test_pool_scores = probs[test_idx]
     eval_observed_scores = test_pool_scores
+    if write_classification:
+        _write_classification_metrics(args, probs[test_idx], data.labels[test_idx], data.class_names, data.known_group[test_idx] if data.known_group is not None else None)
 
     rows = []
     diagnostic_frames = []
@@ -328,6 +330,17 @@ def load_or_create_features(args: argparse.Namespace, data, device: str) -> tupl
     return probs, embeddings
 
 
+def _write_classification_metrics(
+    args: argparse.Namespace,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    class_names: list[str],
+    known_group: np.ndarray | None,
+) -> None:
+    metrics = evaluate_classifier(probs, labels, class_names=class_names, known_group=known_group)
+    write_results(metrics, args.outdir / "classification_metrics.csv")
+
+
 def discover_slices(args: argparse.Namespace, inputs: DiscoveryInputs, show_progress: bool) -> dict[str, list[GroupFunction]]:
     methods = progress(DISCOVERY_METHODS, desc="discover slices", leave=False) if show_progress else DISCOVERY_METHODS
     return {method: discover_slice_method(method, args, inputs) for method in methods}
@@ -404,7 +417,7 @@ def _run_multiseed(args: argparse.Namespace) -> None:
         seed_args.device = device
         seed_args.cuda = None
         print(_seed_settings(seed_args, device), file=sys.stderr, flush=True)
-        frames.append(run_experiment(seed_args, show_progress=False))
+        frames.append(run_experiment(seed_args, show_progress=False, write_classification=False))
 
     summary = average_runs(frames)
     cleaned = write_results(summary, args.outdir / "summary.csv")
