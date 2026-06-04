@@ -1,0 +1,540 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+import warnings
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+import torch
+import torch.nn.functional as F
+from torch import nn
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
+from torchvision import datasets, models, transforms
+import pandas as pd
+
+from core.progress import progress
+
+Image.MAX_IMAGE_PIXELS = None
+
+
+@dataclass(frozen=True)
+class ImageExperimentData:
+    dataset: Dataset
+    labels: np.ndarray
+    class_names: list[str]
+    train_idx: np.ndarray
+    calib0_idx: np.ndarray
+    discovery_idx: np.ndarray
+    mvcal_idx: np.ndarray
+    test_idx: np.ndarray
+    known_group: np.ndarray | None = None
+
+
+class IndexedDataset(Dataset):
+    def __init__(self, dataset: Dataset) -> None:
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index: int):
+        x, y = self.dataset[index]
+        return x, y, index
+
+
+class ImageRecordsDataset(Dataset):
+    def __init__(self, paths: list[Path], labels: np.ndarray, transform) -> None:
+        self.paths = paths
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, index: int):
+        image = Image.open(self.paths[index]).convert("RGB")
+        return self.transform(image), int(self.labels[index])
+
+
+class DicomRecordsDataset(Dataset):
+    def __init__(self, paths: list[Path], labels: np.ndarray, transform) -> None:
+        self.paths = paths
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, index: int):
+        image = _read_dicom_image(self.paths[index])
+        return self.transform(image), int(self.labels[index])
+
+
+def load_imagefolder_experiment(
+    root: Path,
+    seed: int = 7,
+    image_size: int = 224,
+    split_mode: str = "official_test",
+    train_fraction: float = 0.50,
+    calib0_fraction: float = 0.15,
+    discovery_fraction: float = 0.15,
+    mvcal_fraction: float = 0.10,
+) -> ImageExperimentData:
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    train_dir = root / "train"
+    val_dir = root / "val"
+    test_dir = root / "test"
+    if not train_dir.exists() or not test_dir.exists():
+        raise FileNotFoundError(f"Expected ImageFolder train/test directories under {root}")
+
+    train_base = datasets.ImageFolder(train_dir, transform=transform)
+    class_names = train_base.classes
+    parts: list[Dataset] = [train_base]
+    train_labels = [np.asarray(train_base.targets, dtype=np.int64)]
+    if val_dir.exists():
+        val_base = datasets.ImageFolder(val_dir, transform=transform)
+        if val_base.classes != class_names:
+            raise ValueError("train and val class names differ")
+        parts.append(val_base)
+        train_labels.append(np.asarray(val_base.targets, dtype=np.int64))
+    test_base = datasets.ImageFolder(test_dir, transform=transform)
+    if test_base.classes != class_names:
+        raise ValueError("train and test class names differ")
+
+    trainval = ConcatDataset(parts) if len(parts) > 1 else train_base
+    labels_trainval = np.concatenate(train_labels)
+    labels_test = np.asarray(test_base.targets, dtype=np.int64)
+    dataset = ConcatDataset([trainval, test_base])
+    labels = np.concatenate([labels_trainval, labels_test])
+
+    rng = np.random.default_rng(seed)
+    if split_mode == "official_test":
+        split_pool = rng.permutation(len(labels_trainval))
+        test_idx = np.arange(len(labels_trainval), len(labels), dtype=np.int64)
+    elif split_mode == "random_all":
+        all_idx = rng.permutation(len(labels))
+        n_test = max(1, int(0.10 * len(all_idx)))
+        test_idx = all_idx[-n_test:]
+        split_pool = all_idx[:-n_test]
+    else:
+        raise ValueError(f"Unknown split mode: {split_mode}")
+    n_trainval = len(split_pool)
+    a = int(train_fraction * n_trainval)
+    b = int((train_fraction + calib0_fraction) * n_trainval)
+    c = int((train_fraction + calib0_fraction + discovery_fraction) * n_trainval)
+    d = int((train_fraction + calib0_fraction + discovery_fraction + mvcal_fraction) * n_trainval)
+
+    return ImageExperimentData(
+        dataset=dataset,
+        labels=labels,
+        class_names=class_names,
+        train_idx=split_pool[:a],
+        calib0_idx=split_pool[a:b],
+        discovery_idx=split_pool[b:c],
+        mvcal_idx=split_pool[c:d],
+        test_idx=test_idx,
+        known_group=None,
+    )
+
+
+def load_rsna_breast_experiment(
+    root: Path,
+    seed: int = 7,
+    image_size: int = 224,
+    max_samples: int | None = None,
+    train_fraction: float = 0.50,
+    calib0_fraction: float = 0.15,
+    discovery_fraction: float = 0.15,
+    mvcal_fraction: float = 0.10,
+) -> ImageExperimentData:
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    metadata = pd.read_csv(root / "train.csv")
+    metadata["path"] = metadata.apply(lambda row: root / "train_images" / str(row["patient_id"]) / f"{row['image_id']}.dcm", axis=1)
+    metadata = metadata[metadata["path"].map(Path.exists)].copy()
+    metadata = metadata[metadata["path"].map(_dicom_has_pixel_data)].copy()
+    if max_samples is not None and len(metadata) > max_samples:
+        metadata = _balanced_image_sample(metadata, "cancer", max_samples, seed)
+    metadata = metadata.reset_index(drop=True)
+
+    labels = metadata["cancer"].to_numpy(dtype=np.int64)
+    paths = metadata["path"].tolist()
+    dataset = DicomRecordsDataset(paths, labels, transform)
+    train_idx, calib0_idx, discovery_idx, mvcal_idx, test_idx = _stratified_patient_splits(
+        metadata,
+        seed=seed,
+        train_fraction=train_fraction,
+        calib0_fraction=calib0_fraction,
+        discovery_fraction=discovery_fraction,
+        mvcal_fraction=mvcal_fraction,
+    )
+    known_group = _rsna_known_group(metadata)
+    return ImageExperimentData(
+        dataset=dataset,
+        labels=labels,
+        class_names=["no_cancer", "cancer"],
+        train_idx=train_idx,
+        calib0_idx=calib0_idx,
+        discovery_idx=discovery_idx,
+        mvcal_idx=mvcal_idx,
+        test_idx=test_idx,
+        known_group=known_group,
+    )
+
+
+def load_nih_experiment(
+    root: Path,
+    target: str = "Effusion",
+    known_group: str = "gender",
+    seed: int = 7,
+    image_size: int = 224,
+    max_samples: int | None = None,
+    split_mode: str = "official_test",
+    train_fraction: float = 0.50,
+    calib0_fraction: float = 0.15,
+    discovery_fraction: float = 0.15,
+    mvcal_fraction: float = 0.10,
+) -> ImageExperimentData:
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    metadata = pd.read_csv(root / "Data_Entry_2017.csv")
+    path_map = {path.name: path for path in root.glob("images*/**/*.png")}
+    metadata = metadata[metadata["Image Index"].isin(path_map)].copy()
+    metadata["label"] = metadata["Finding Labels"].str.split("|").apply(lambda labels: int(target in labels))
+    metadata["split"] = "unused"
+    train_names = set((root / "train_val_list.txt").read_text(encoding="utf-8").splitlines())
+    test_names = set((root / "test_list.txt").read_text(encoding="utf-8").splitlines())
+    metadata.loc[metadata["Image Index"].isin(train_names), "split"] = "trainval"
+    metadata.loc[metadata["Image Index"].isin(test_names), "split"] = "test"
+    metadata = metadata[metadata["split"].isin(["trainval", "test"])].copy()
+
+    if max_samples is not None and len(metadata) > max_samples:
+        metadata = _balanced_metadata_sample(metadata, max_samples, seed)
+
+    metadata = metadata.reset_index(drop=True)
+    paths = [path_map[name] for name in metadata["Image Index"]]
+    labels = metadata["label"].to_numpy(dtype=np.int64)
+    group_values = _nih_group_values(metadata, known_group)
+    _, encoded_groups = np.unique(group_values, return_inverse=True)
+    encoded_groups = encoded_groups.astype(np.int64)
+
+    dataset = ImageRecordsDataset(paths, labels, transform)
+    rng = np.random.default_rng(seed)
+    if split_mode == "official_test":
+        split_pool = rng.permutation(metadata.index[metadata["split"] == "trainval"].to_numpy(dtype=np.int64))
+        test_idx = metadata.index[metadata["split"] == "test"].to_numpy(dtype=np.int64)
+    elif split_mode == "random_all":
+        all_idx = rng.permutation(len(metadata))
+        n_test = max(1, int(0.10 * len(all_idx)))
+        test_idx = all_idx[-n_test:]
+        split_pool = all_idx[:-n_test]
+    else:
+        raise ValueError(f"Unknown split mode: {split_mode}")
+    n_trainval = len(split_pool)
+    a = int(train_fraction * n_trainval)
+    b = int((train_fraction + calib0_fraction) * n_trainval)
+    c = int((train_fraction + calib0_fraction + discovery_fraction) * n_trainval)
+    d = int((train_fraction + calib0_fraction + discovery_fraction + mvcal_fraction) * n_trainval)
+
+    return ImageExperimentData(
+        dataset=dataset,
+        labels=labels,
+        class_names=[f"not_{target}", target],
+        train_idx=split_pool[:a],
+        calib0_idx=split_pool[a:b],
+        discovery_idx=split_pool[b:c],
+        mvcal_idx=split_pool[c:d],
+        test_idx=test_idx,
+        known_group=encoded_groups,
+    )
+
+
+def _read_dicom_image(path: Path) -> Image.Image:
+    try:
+        import pydicom
+    except ImportError as exc:
+        raise ImportError("RSNA breast DICOM loading requires pydicom.") from exc
+
+    dicom = pydicom.dcmread(path)
+    if not hasattr(dicom, "PixelData"):
+        raise ValueError(f"DICOM file has no pixel data: {path}")
+    array = dicom.pixel_array.astype(np.float32)
+    if getattr(dicom, "PhotometricInterpretation", "") == "MONOCHROME1":
+        array = array.max() - array
+    low, high = np.percentile(array, [1.0, 99.0])
+    if high <= low:
+        low, high = float(array.min()), float(array.max())
+    if high <= low:
+        normalized = np.zeros_like(array, dtype=np.uint8)
+    else:
+        normalized = np.clip((array - low) / (high - low), 0.0, 1.0)
+        normalized = (normalized * 255.0).astype(np.uint8)
+    return Image.fromarray(normalized).convert("RGB")
+
+
+def _dicom_has_pixel_data(path: Path) -> bool:
+    try:
+        import pydicom
+    except ImportError as exc:
+        raise ImportError("RSNA breast DICOM loading requires pydicom.") from exc
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dicom = pydicom.dcmread(path)
+    except Exception:
+        return False
+    return hasattr(dicom, "PixelData")
+
+
+def _balanced_image_sample(metadata: pd.DataFrame, label_column: str, max_samples: int, seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    per_label = max(1, max_samples // metadata[label_column].nunique())
+    selected: list[int] = []
+    for label in sorted(metadata[label_column].dropna().unique()):
+        label_idx = metadata.index[metadata[label_column] == label].to_numpy()
+        take = min(len(label_idx), per_label)
+        selected.extend(rng.choice(label_idx, size=take, replace=False).tolist())
+    if len(selected) < max_samples:
+        remaining = np.setdiff1d(metadata.index.to_numpy(), np.asarray(selected, dtype=np.int64))
+        take = min(len(remaining), max_samples - len(selected))
+        selected.extend(rng.choice(remaining, size=take, replace=False).tolist())
+    return metadata.loc[selected].sample(frac=1.0, random_state=seed)
+
+
+def _stratified_patient_splits(
+    metadata: pd.DataFrame,
+    seed: int,
+    train_fraction: float,
+    calib0_fraction: float,
+    discovery_fraction: float,
+    mvcal_fraction: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    patient_labels = metadata.groupby("patient_id")["cancer"].max()
+    split_patient_ids = {"train": [], "calib0": [], "discovery": [], "mvcal": [], "test": []}
+    rng = np.random.default_rng(seed)
+    for label in [0, 1]:
+        patient_ids = patient_labels.index[patient_labels == label].to_numpy()
+        patient_ids = rng.permutation(patient_ids)
+        n = len(patient_ids)
+        a = int(train_fraction * n)
+        b = int((train_fraction + calib0_fraction) * n)
+        c = int((train_fraction + calib0_fraction + discovery_fraction) * n)
+        d = int((train_fraction + calib0_fraction + discovery_fraction + mvcal_fraction) * n)
+        split_patient_ids["train"].extend(patient_ids[:a].tolist())
+        split_patient_ids["calib0"].extend(patient_ids[a:b].tolist())
+        split_patient_ids["discovery"].extend(patient_ids[b:c].tolist())
+        split_patient_ids["mvcal"].extend(patient_ids[c:d].tolist())
+        split_patient_ids["test"].extend(patient_ids[d:].tolist())
+
+    return tuple(
+        metadata.index[metadata["patient_id"].isin(split_patient_ids[name])].to_numpy(dtype=np.int64)
+        for name in ["train", "calib0", "discovery", "mvcal", "test"]
+    )
+
+
+def _rsna_known_group(metadata: pd.DataFrame) -> np.ndarray:
+    group_values = metadata["site_id"].astype(str) + "_" + metadata["laterality"].astype(str) + "_" + metadata["view"].astype(str)
+    _, encoded = np.unique(group_values.to_numpy(), return_inverse=True)
+    return encoded.astype(np.int64)
+
+
+def _balanced_metadata_sample(metadata: pd.DataFrame, max_samples: int, seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    pieces = []
+    per_split = max_samples // 2
+    for split in ["trainval", "test"]:
+        part = metadata[metadata["split"] == split]
+        split_target = min(len(part), per_split)
+        per_class = max(1, split_target // 2)
+        selected = []
+        for label in [0, 1]:
+            label_idx = part.index[part["label"] == label].to_numpy()
+            take = min(len(label_idx), per_class)
+            if take:
+                selected.extend(rng.choice(label_idx, size=take, replace=False).tolist())
+        if len(selected) < split_target:
+            remaining = np.setdiff1d(part.index.to_numpy(), np.asarray(selected, dtype=np.int64))
+            take = min(len(remaining), split_target - len(selected))
+            selected.extend(rng.choice(remaining, size=take, replace=False).tolist())
+        pieces.append(metadata.loc[selected])
+    return pd.concat(pieces, ignore_index=True)
+
+
+def _nih_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
+    age = pd.cut(metadata["Patient Age"].clip(0, 100), bins=[-1, 40, 60, 120], labels=["age_le_40", "age_41_60", "age_gt_60"]).astype(str)
+    gender = metadata["Patient Gender"].astype(str)
+    view = metadata["View Position"].astype(str)
+    if group == "gender":
+        return gender.to_numpy()
+    if group == "age":
+        return age.to_numpy()
+    if group == "view":
+        return view.to_numpy()
+    if group == "gender_age":
+        return (gender + "_" + age).to_numpy()
+    if group == "gender_view":
+        return (gender + "_" + view).to_numpy()
+    raise ValueError(f"Unknown NIH known group: {group}")
+
+
+class ImageClassifier(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        backbone: str = "resnet18",
+        pretrained: bool = True,
+        checkpoint: Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.backbone_name = backbone
+        self.backbone, in_features = _build_backbone(backbone, pretrained, checkpoint)
+        self.head = nn.Linear(in_features, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.embed(x))
+
+    def embed(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)
+
+
+def train_image_classifier(
+    dataset: Dataset,
+    train_idx: np.ndarray,
+    num_classes: int,
+    device: str = "cuda",
+    epochs: int = 8,
+    batch_size: int = 64,
+    lr: float = 1e-4,
+    seed: int = 7,
+    pretrained: bool = True,
+    backbone: str = "resnet18",
+    checkpoint: Path | None = None,
+) -> ImageClassifier:
+    torch.manual_seed(seed)
+    model = ImageClassifier(num_classes=num_classes, backbone=backbone, pretrained=pretrained, checkpoint=checkpoint).to(device)
+    loader = DataLoader(Subset(dataset, train_idx.tolist()), batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    loss_fn = nn.CrossEntropyLoss()
+    model.train()
+    for _ in progress(range(epochs), desc="train backbone", leave=False):
+        for xb, yb in loader:
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
+            loss = loss_fn(model(xb), yb)
+            loss.backward()
+            optimizer.step()
+    return model
+
+
+@torch.no_grad()
+def predict_image_dataset(
+    model: ImageClassifier,
+    dataset: Dataset,
+    device: str = "cuda",
+    batch_size: int = 128,
+) -> tuple[np.ndarray, np.ndarray]:
+    indexed = IndexedDataset(dataset)
+    loader = DataLoader(indexed, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    model.eval()
+    probs_by_index: dict[int, np.ndarray] = {}
+    emb_by_index: dict[int, np.ndarray] = {}
+    for xb, _, indices in progress(loader, desc="extract features", total=len(loader), leave=False):
+        xb = xb.to(device, non_blocking=True)
+        logits = model(xb)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        embeddings = model.embed(xb).cpu().numpy()
+        for idx, prob, emb in zip(indices.numpy().tolist(), probs, embeddings):
+            probs_by_index[idx] = prob
+            emb_by_index[idx] = emb
+    probs = np.stack([probs_by_index[i] for i in range(len(dataset))])
+    embeddings = np.stack([emb_by_index[i] for i in range(len(dataset))]).astype(np.float32)
+    return probs, embeddings
+
+
+def _build_backbone(backbone: str, pretrained: bool, checkpoint: Path | None) -> tuple[nn.Module, int]:
+    name = backbone.lower()
+    if name == "resnet18":
+        model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if pretrained else None)
+        in_features = model.fc.in_features
+        model.fc = nn.Identity()
+    elif name == "resnet50":
+        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if pretrained else None)
+        in_features = model.fc.in_features
+        model.fc = nn.Identity()
+    elif name in {"densenet121", "chexnet"}:
+        if name == "chexnet" and checkpoint is None:
+            raise ValueError("chexnet requires --backbone-checkpoint pointing to a DenseNet-121 CheXNet checkpoint.")
+        model = _DenseNetBackbone(pretrained=pretrained)
+        in_features = model.out_features
+    elif name in {"radimagenet-resnet50", "radimagenet-densenet121"}:
+        if checkpoint is None:
+            raise ValueError(f"{backbone} requires --backbone-checkpoint pointing to RadImageNet weights.")
+        model, in_features = _build_backbone(name.removeprefix("radimagenet-"), pretrained=False, checkpoint=None)
+    else:
+        raise ValueError(f"Unknown image backbone: {backbone}")
+
+    if checkpoint is not None:
+        _load_checkpoint(model, checkpoint)
+    return model, in_features
+
+
+class _DenseNetBackbone(nn.Module):
+    def __init__(self, pretrained: bool) -> None:
+        super().__init__()
+        weights = models.DenseNet121_Weights.DEFAULT if pretrained else None
+        densenet = models.densenet121(weights=weights)
+        self.features = densenet.features
+        self.out_features = densenet.classifier.in_features
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = F.relu(self.features(x), inplace=True)
+        pooled = F.adaptive_avg_pool2d(features, output_size=(1, 1))
+        return torch.flatten(pooled, 1)
+
+
+def _load_checkpoint(model: nn.Module, checkpoint: Path) -> None:
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Backbone checkpoint not found: {checkpoint}")
+    state = torch.load(checkpoint, map_location="cpu")
+    if isinstance(state, dict):
+        for key in ["state_dict", "model", "model_state_dict", "net"]:
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if not isinstance(state, dict):
+        raise ValueError(f"Unsupported checkpoint format: {checkpoint}")
+    cleaned = {_clean_checkpoint_key(key): value for key, value in state.items()}
+    current = model.state_dict()
+    matched = {key: value for key, value in cleaned.items() if key in current and current[key].shape == value.shape}
+    if not matched:
+        raise ValueError(f"No backbone parameters in {checkpoint} matched the selected architecture.")
+    model.load_state_dict(matched, strict=False)
+
+
+def _clean_checkpoint_key(key: str) -> str:
+    key = re.sub(r"^(module\.|model\.|backbone\.)+", "", key)
+    if key.startswith("features."):
+        return key
+    if key.startswith("backbone.features."):
+        return key.removeprefix("backbone.")
+    return key
