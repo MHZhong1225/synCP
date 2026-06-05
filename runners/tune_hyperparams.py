@@ -197,7 +197,8 @@ def main() -> None:
 
 def select_best_docp(sweep: pd.DataFrame) -> pd.DataFrame:
     docp = sweep[sweep["method"].eq("DOCP")].copy()
-    docp["_slice_coverage"] = docp["worst_discovered_slice_coverage"].fillna(docp["marginal_coverage"])
+    slice_col = "worst_shared_discovered_slice_coverage" if "worst_shared_discovered_slice_coverage" in docp else "worst_discovered_slice_coverage"
+    docp["_slice_coverage"] = docp[slice_col].fillna(docp["marginal_coverage"])
     docp["_known_coverage"] = docp["worst_known_group_coverage"].fillna(-1.0)
     docp["_class_coverage"] = docp["worst_class_coverage"].fillna(-1.0)
     docp["_coverage_ok"] = docp["marginal_coverage"] >= 0.9
@@ -227,6 +228,8 @@ def select_best_docp(sweep: pd.DataFrame) -> pd.DataFrame:
         "marginal_coverage",
         "avg_set_size",
         "max_undercoverage_gap",
+        "worst_shared_discovered_slice_coverage",
+        "worst_own_pool_coverage",
         "worst_discovered_slice_coverage",
         "worst_class_coverage",
         "worst_known_group_coverage",
@@ -267,6 +270,8 @@ def write_fixed_config(best: pd.DataFrame, path: Path) -> None:
                 "marginal_coverage": float(row["marginal_coverage"]),
                 "avg_set_size": float(row["avg_set_size"]),
                 "max_undercoverage_gap": float(row["max_undercoverage_gap"]),
+                "worst_shared_discovered_slice_coverage": _optional_float(row.get("worst_shared_discovered_slice_coverage")),
+                "worst_own_pool_coverage": _optional_float(row.get("worst_own_pool_coverage")),
                 "worst_discovered_slice_coverage": _optional_float(row["worst_discovered_slice_coverage"]),
                 "worst_class_coverage": _optional_float(row["worst_class_coverage"]),
                 "worst_known_group_coverage": _optional_float(row["worst_known_group_coverage"]),

@@ -540,6 +540,7 @@ def _eval(name, rect, embeddings, score_matrix, data, test_idx, groups, alpha, o
         alpha,
         observed_scores=observed_scores,
         eval_observed_scores=eval_observed_scores,
+        own_groups=groups,
     )
 
 

@@ -26,6 +26,7 @@ def evaluate_threshold_model(
     alpha: float,
     observed_scores: np.ndarray | None = None,
     eval_observed_scores: np.ndarray | None = None,
+    own_groups: list[GroupFunction] | None = None,
 ) -> dict[str, float | str | int]:
     true_scores = true_label_scores(score_matrix, y)
     if observed_scores is None:
@@ -39,12 +40,13 @@ def evaluate_threshold_model(
         "avg_set_size": float(sizes.mean()),
         "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
     }
-    row["worst_discovered_slice_coverage"] = _worst_group_coverage(discovered_groups, z, eval_observed_scores if eval_observed_scores is not None else observed_scores, is_covered)
+    eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
+    _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     worst_values = [
-        row["worst_discovered_slice_coverage"],
+        row["worst_shared_discovered_slice_coverage"],
         row["worst_hidden_group_coverage"],
         row["worst_known_group_coverage"],
         row["worst_class_coverage"],
@@ -179,6 +181,7 @@ def evaluate_classwise_model(
     alpha: float,
     observed_scores: np.ndarray | None = None,
     eval_observed_scores: np.ndarray | None = None,
+    own_groups: list[GroupFunction] | None = None,
 ) -> dict[str, float | str | int]:
     if observed_scores is None:
         observed_scores = score_matrix.min(axis=1)
@@ -190,13 +193,14 @@ def evaluate_classwise_model(
         "avg_set_size": float(sizes.mean()),
         "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
     }
-    row["worst_discovered_slice_coverage"] = _worst_group_coverage(discovered_groups, z, eval_observed_scores if eval_observed_scores is not None else observed_scores, is_covered)
+    eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
+    _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
         float(row[key])
-        for key in ["worst_discovered_slice_coverage", "worst_hidden_group_coverage", "worst_known_group_coverage", "worst_class_coverage"]
+        for key in ["worst_shared_discovered_slice_coverage", "worst_hidden_group_coverage", "worst_known_group_coverage", "worst_class_coverage"]
         if not np.isnan(float(row[key]))
     ]
     if finite:
@@ -217,6 +221,7 @@ def evaluate_groupwise_model(
     alpha: float,
     observed_scores: np.ndarray | None = None,
     eval_observed_scores: np.ndarray | None = None,
+    own_groups: list[GroupFunction] | None = None,
 ) -> dict[str, float | str | int]:
     if observed_scores is None:
         observed_scores = score_matrix.min(axis=1)
@@ -229,13 +234,14 @@ def evaluate_groupwise_model(
         "avg_set_size": float(sizes.mean()),
         "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
     }
-    row["worst_discovered_slice_coverage"] = _worst_group_coverage(discovered_groups, z, eval_observed_scores if eval_observed_scores is not None else observed_scores, is_covered)
+    eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
+    _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
         float(row[key])
-        for key in ["worst_discovered_slice_coverage", "worst_hidden_group_coverage", "worst_known_group_coverage", "worst_class_coverage"]
+        for key in ["worst_shared_discovered_slice_coverage", "worst_hidden_group_coverage", "worst_known_group_coverage", "worst_class_coverage"]
         if not np.isnan(float(row[key]))
     ]
     if finite:
@@ -291,6 +297,23 @@ def _benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
         running = min(running, ranked[i] * n / rank)
         adjusted[order[i]] = running
     return np.clip(adjusted, 0.0, 1.0)
+
+
+def _add_group_coverage_metrics(
+    row: dict[str, float | str | int],
+    discovered_groups: list[GroupFunction],
+    own_groups: list[GroupFunction] | None,
+    z: np.ndarray,
+    observed_scores: np.ndarray,
+    covered_mask: np.ndarray,
+) -> None:
+    shared_coverage = _worst_group_coverage(discovered_groups, z, observed_scores, covered_mask)
+    row["worst_shared_discovered_slice_coverage"] = shared_coverage
+    row["worst_discovered_slice_coverage"] = shared_coverage
+    if own_groups is None:
+        row["worst_own_pool_coverage"] = float("nan")
+    else:
+        row["worst_own_pool_coverage"] = _worst_group_coverage(own_groups, z, observed_scores, covered_mask)
 
 
 def _worst_group_coverage(groups: list[GroupFunction], z: np.ndarray, observed_scores: np.ndarray, covered_mask: np.ndarray, min_size: int = 20) -> float:
