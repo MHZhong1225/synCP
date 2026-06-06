@@ -52,25 +52,9 @@ CONFIG_PROFILES = {
 }
 
 DATASETS = {
-    "bach": {
-        "module": "experiments.images",
-        "args": ["--dataset-root", "../dataset/bach", "--cache-file", "results/bach/features.npz", "--cache"],
-    },
     "bracs": {
         "module": "experiments.images",
         "args": ["--dataset-root", "../dataset/bracs", "--cache-file", "results/bracs/features.npz", "--cache"],
-    },
-    "chest_xray": {
-        "module": "experiments.images",
-        "args": [
-            "--dataset-root",
-            "../dataset/chest_xray",
-            "--split-mode",
-            "random_all",
-            "--cache-file",
-            "results/chest_xray/features.npz",
-            "--cache",
-        ],
     },
     "nih": {
         "module": "experiments.images",

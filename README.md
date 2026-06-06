@@ -49,8 +49,7 @@ The public arguments are intentionally small:
 
 ## Image Experiments
 
-ImageFolder datasets are multi-class by default. BRACS is a 7-class task and
-BACH is a 4-class task when their directory layout is `train/val/test/<class>`.
+ImageFolder datasets are multi-class by default. BRACS is a 7-class task.
 NIH is kept as a single-disease one-vs-rest task because its labels are
 multi-label disease tags.
 
@@ -60,17 +59,23 @@ BRACS:
 python -m experiments.images --dataset-root ../dataset/bracs --preset bracs --outdir results/bracs --device cuda:1
 ```
 
-Chest X-ray with a random exchangeable split:
-
-```bash
-python -m experiments.images --dataset-root ../dataset/chest_xray --split-mode random_all --outdir results/chest_xray --device cuda:1
-```
-
 NIH Effusion:
 
 ```bash
 python -m experiments.images --dataset-type nih --dataset-root ../dataset/NIH_ChestXrays --nih-target Effusion --known-group gender --max-samples 5000 --outdir results/nih --device cuda --cache
 ```
+
+MIMIC-CXR joined with MIMIC-IV and MIMIC-IV-ED:
+
+```bash
+python -m experiments.images --preset mimic_effusion --outdir results/mimic_effusion --device cuda:0
+python -m runners.run_mimic_targets --device cuda:0
+```
+
+The MIMIC experiments derive binary disease labels from the compressed CXR
+reports, use patient-level splits, and evaluate known clinical groups joined
+from MIMIC-IV and MIMIC-IV-ED. The all-target runner evaluates pleural
+effusion, pneumonia, pneumothorax, pulmonary edema, and cardiomegaly.
 
 RSNA Breast Cancer Detection:
 
@@ -91,7 +96,7 @@ Image backbones can be selected with `--backbone`. The built-in choices are
 `radimagenet-densenet121`. CheXNet and RadImageNet require a local checkpoint:
 
 ```bash
-python -m experiments.images --dataset-root ../dataset/chest_xray --split-mode random_all --outdir results/chest_xray_chexnet --backbone chexnet --backbone-checkpoint checkpoints/chexnet.pth --device cuda
+python -m experiments.images --preset bracs --outdir results/bracs_chexnet --backbone chexnet --backbone-checkpoint checkpoints/chexnet.pth --device cuda
 ```
 
 Feature caches are backbone-specific. Rerun without `--cache` when
@@ -106,7 +111,7 @@ configs/image_backbone_search.json
 Run the search with:
 
 ```bash
-python -m runners.image_search --config configs/image_backbone_search.json --outdir results/bach_backbone_search --cuda 0
+python -m runners.image_search --config configs/image_backbone_search.json --outdir results/bracs_backbone_search --cuda 0
 ```
 
 ## Method Groups

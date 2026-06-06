@@ -256,19 +256,17 @@ def main() -> None:
                         base_q,
                     )
                 )
-        if "batch_gcp" in RECTIFIERS:
-            observed_for_method = mv_pool_scores if method == "candidate_pool" else mv_observed_scores
-            test_scores_for_method = test_pool_scores if method == "candidate_pool" else test_observed_scores
+        if "batch_gcp" in RECTIFIERS and method == "candidate_pool":
             rect = fit_batch_gcp(
                 base_q,
                 groups,
                 embeddings[splits.mvcal],
                 mv_scores,
                 args.alpha,
-                observed_scores=observed_for_method,
+                observed_scores=mv_pool_scores,
                 min_size=args.rectifier_min_size,
             )
-            rows.append(_eval(_method_display_name(method, "batch_gcp"), rect, embeddings, score_matrix, data, test_idx, eval_groups, args.alpha, observed_scores=test_scores_for_method, eval_observed_scores=eval_observed_scores))
+            rows.append(_eval(_method_display_name(method, "batch_gcp"), rect, embeddings, score_matrix, data, test_idx, eval_groups, args.alpha, observed_scores=test_pool_scores, eval_observed_scores=eval_observed_scores))
     summary = pd.DataFrame(rows)
     cleaned = write_results(summary, args.outdir / "summary.csv")
     if args.diagnostics:
@@ -342,14 +340,9 @@ def _method_display_name(discovery_method: str, rectifier: str) -> str:
         ("candidate_pool", "pool_mvp"): "DOCP-MVP",
         ("candidate_pool", "batch_gcp"): "DOCP",
         ("random_halfspace", "slice_quantile"): "Random halfspace",
-        ("random_halfspace", "batch_gcp"): "Random halfspace GCP",
-        ("coverage_domino", "batch_gcp"): "Coverage-Domino GCP",
         ("coverage_domino", "slice_quantile"): "Coverage-Domino",
-        ("kmeans", "batch_gcp"): "K-means GCP",
         ("kmeans", "slice_quantile"): "K-means",
-        ("gmm_unaware", "batch_gcp"): "GMM-unaware GCP",
         ("gmm_unaware", "slice_quantile"): "GMM-unaware",
-        ("error_domino", "batch_gcp"): "Error-slice GCP",
         ("error_domino", "slice_quantile"): "Error-slice",
     }
     return names.get((discovery_method, rectifier), f"{discovery_method} {rectifier}")

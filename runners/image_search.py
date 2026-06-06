@@ -15,9 +15,7 @@ from reports.output import print_results, write_results
 
 
 DATASET_ROOTS = {
-    "bach": Path("../dataset/bach"),
     "bracs": Path("../dataset/bracs"),
-    "chest_xray": Path("../dataset/chest_xray"),
 }
 
 ARG_KEYS = {
@@ -132,7 +130,7 @@ def _run_combination(
 
 def _print_search_settings(config_index: int, total_configs: int, params: dict[str, object], seed: int, device: str) -> None:
     shown = {
-        "dataset": params.get("dataset.dataset_mode", "bach"),
+        "dataset": params.get("dataset.dataset_mode", "bracs"),
         "backbone": params.get("dataset.image_backbone", "resnet18"),
         "seed": seed,
         "device": device,
@@ -150,7 +148,7 @@ def _print_search_settings(config_index: int, total_configs: int, params: dict[s
 
 
 def _run_one(params: dict[str, object], seed: int, device: str, outdir: Path) -> None:
-    dataset_mode = str(params.get("dataset.dataset_mode", "bach"))
+    dataset_mode = str(params.get("dataset.dataset_mode", "bracs"))
     if dataset_mode not in DATASET_ROOTS:
         raise ValueError(f"Unknown dataset.dataset_mode: {dataset_mode}")
 

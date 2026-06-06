@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 import warnings
 from pathlib import Path
+from zipfile import ZipFile
 
 import numpy as np
 from PIL import Image
@@ -267,6 +268,274 @@ def load_nih_experiment(
     )
 
 
+def load_ham10000_experiment(
+    root: Path,
+    known_group: str = "sex",
+    seed: int = 7,
+    image_size: int = 224,
+    max_samples: int | None = None,
+    train_fraction: float = 0.50,
+    calib0_fraction: float = 0.15,
+    discovery_fraction: float = 0.15,
+    mvcal_fraction: float = 0.10,
+) -> ImageExperimentData:
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    metadata = pd.read_csv(root / "HAM10000_metadata.csv")
+    path_map = {path.stem: path for path in root.glob("HAM10000_images_part_*/*.jpg")}
+    metadata = metadata[metadata["image_id"].isin(path_map)].copy()
+    if max_samples is not None and len(metadata) > max_samples:
+        metadata = _balanced_image_sample(metadata, "dx", max_samples, seed)
+    metadata = metadata.reset_index(drop=True)
+
+    class_names = sorted(metadata["dx"].dropna().unique().tolist())
+    class_to_index = {name: index for index, name in enumerate(class_names)}
+    labels = metadata["dx"].map(class_to_index).to_numpy(dtype=np.int64)
+    paths = [path_map[image_id] for image_id in metadata["image_id"]]
+    group_values = _ham10000_group_values(metadata, known_group)
+    _, encoded_groups = np.unique(group_values, return_inverse=True)
+
+    dataset = ImageRecordsDataset(paths, labels, transform)
+    train_idx, calib0_idx, discovery_idx, mvcal_idx, test_idx = _stratified_lesion_splits(
+        metadata,
+        labels,
+        seed=seed,
+        train_fraction=train_fraction,
+        calib0_fraction=calib0_fraction,
+        discovery_fraction=discovery_fraction,
+        mvcal_fraction=mvcal_fraction,
+    )
+    return ImageExperimentData(
+        dataset=dataset,
+        labels=labels,
+        class_names=class_names,
+        train_idx=train_idx,
+        calib0_idx=calib0_idx,
+        discovery_idx=discovery_idx,
+        mvcal_idx=mvcal_idx,
+        test_idx=test_idx,
+        known_group=encoded_groups.astype(np.int64),
+    )
+
+
+def load_mimic_joint_experiment(
+    root: Path,
+    mimic_iv_root: Path,
+    mimic_ed_root: Path,
+    target: str = "Pleural Effusion",
+    known_group: str = "race",
+    seed: int = 7,
+    image_size: int = 224,
+    max_samples: int | None = 5000,
+    train_fraction: float = 0.50,
+    calib0_fraction: float = 0.15,
+    discovery_fraction: float = 0.15,
+    mvcal_fraction: float = 0.10,
+) -> ImageExperimentData:
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    metadata = _load_mimic_cxr_records(root, target)
+    if max_samples is not None and len(metadata) > max_samples:
+        metadata = _balanced_mimic_sample(metadata, max_samples, seed)
+    metadata = _join_mimic_clinical_metadata(metadata, mimic_iv_root, mimic_ed_root)
+    metadata = metadata.reset_index(drop=True)
+
+    labels = metadata["label"].to_numpy(dtype=np.int64)
+    dataset = ImageRecordsDataset(metadata["path"].tolist(), labels, transform)
+    train_idx, calib0_idx, discovery_idx, mvcal_idx, test_idx = _mimic_patient_splits(
+        metadata,
+        seed=seed,
+        train_fraction=train_fraction,
+        calib0_fraction=calib0_fraction,
+        discovery_fraction=discovery_fraction,
+        mvcal_fraction=mvcal_fraction,
+    )
+    group_values = _mimic_group_values(metadata, known_group)
+    _, encoded_groups = np.unique(group_values, return_inverse=True)
+    return ImageExperimentData(
+        dataset=dataset,
+        labels=labels,
+        class_names=[f"not_{target}", target],
+        train_idx=train_idx,
+        calib0_idx=calib0_idx,
+        discovery_idx=discovery_idx,
+        mvcal_idx=mvcal_idx,
+        test_idx=test_idx,
+        known_group=encoded_groups.astype(np.int64),
+    )
+
+
+MIMIC_TARGET_TERMS = {
+    "Pleural Effusion": (r"pleural effusion", r"pleural fluid"),
+    "Pneumonia": (r"pneumonia",),
+    "Pneumothorax": (r"pneumothorax",),
+    "Pulmonary Edema": (r"pulmonary edema", r"interstitial edema"),
+    "Cardiomegaly": (r"cardiomegaly", r"cardiac enlargement", r"enlarged cardiac silhouette"),
+}
+
+
+def _load_mimic_cxr_records(root: Path, target: str) -> pd.DataFrame:
+    if target not in MIMIC_TARGET_TERMS:
+        raise ValueError(f"Unknown MIMIC target: {target}")
+    records = pd.read_csv(root / "cxr-record-list.csv.gz", usecols=["subject_id", "study_id", "path"])
+    records["path"] = records["path"].map(lambda path: root / Path(path).with_suffix(".jpg"))
+    records = records[records["path"].map(Path.exists)].copy()
+
+    study_labels = _load_mimic_study_labels(root, target)
+    records["label"] = records["study_id"].map(study_labels)
+    return records.dropna(subset=["label"]).astype({"label": np.int64})
+
+
+def _load_mimic_study_labels(root: Path, target: str) -> dict[int, int]:
+    labels: dict[int, int] = {}
+    with ZipFile(root / "mimic-cxr-reports.zip") as reports:
+        for name in reports.namelist():
+            if not name.endswith(".txt"):
+                continue
+            study_id = int(Path(name).stem.removeprefix("s"))
+            report = reports.read(name).decode("utf-8", errors="ignore")
+            labels[study_id] = _mimic_report_label(report, target)
+    return labels
+
+
+def _mimic_report_label(report: str, target: str) -> int:
+    text = report.lower()
+    clauses = re.split(r"[.;]|\bbut\b|\bhowever\b", text)
+    terms = MIMIC_TARGET_TERMS[target]
+    negative = re.compile(r"(?:no|without|absence of|free of|negative for|no evidence of|rule out)[^.;]{0,100}$")
+    for clause in clauses:
+        for term in terms:
+            for match in re.finditer(term, clause):
+                prefix = clause[max(0, match.start() - 80):match.start()]
+                if not negative.search(prefix):
+                    return 1
+    return 0
+
+
+def _join_mimic_clinical_metadata(metadata: pd.DataFrame, mimic_iv_root: Path, mimic_ed_root: Path) -> pd.DataFrame:
+    patients = pd.read_csv(mimic_iv_root / "hosp" / "patients.csv.gz", usecols=["subject_id", "gender", "anchor_age"])
+    admissions = pd.read_csv(
+        mimic_iv_root / "hosp" / "admissions.csv.gz",
+        usecols=["subject_id", "race", "insurance", "hospital_expire_flag"],
+    )
+    admissions["race"] = admissions["race"].map(_normalize_mimic_race)
+    admission_summary = admissions.groupby("subject_id", as_index=False).agg(
+        race=("race", _mode_or_unknown),
+        insurance=("insurance", _mode_or_unknown),
+        hospital_expire_flag=("hospital_expire_flag", "max"),
+    )
+    edstays = pd.read_csv(
+        mimic_ed_root / "ed" / "edstays.csv.gz",
+        usecols=["subject_id", "stay_id", "arrival_transport", "disposition"],
+    )
+    ed_summary = edstays.groupby("subject_id", as_index=False).agg(
+        arrival_transport=("arrival_transport", _mode_or_unknown),
+        ed_disposition=("disposition", _mode_or_unknown),
+    )
+    triage = pd.read_csv(mimic_ed_root / "ed" / "triage.csv.gz", usecols=["stay_id", "acuity"])
+    acuity = edstays[["subject_id", "stay_id"]].merge(triage, on="stay_id", how="left")
+    acuity = acuity.groupby("subject_id", as_index=False)["acuity"].median().rename(columns={"acuity": "ed_acuity"})
+    icu_subjects = set(pd.read_csv(mimic_iv_root / "icu" / "icustays.csv.gz", usecols=["subject_id"])["subject_id"].unique())
+
+    joined = metadata.merge(patients, on="subject_id", how="left")
+    joined = joined.merge(admission_summary, on="subject_id", how="left")
+    joined = joined.merge(ed_summary, on="subject_id", how="left")
+    joined = joined.merge(acuity, on="subject_id", how="left")
+    joined["icu_history"] = joined["subject_id"].isin(icu_subjects).astype(np.int64)
+    return joined
+
+
+def _mode_or_unknown(values: pd.Series) -> str:
+    values = values.dropna().astype(str)
+    if values.empty:
+        return "UNKNOWN"
+    modes = values.mode()
+    return str(modes.iloc[0]) if not modes.empty else str(values.iloc[0])
+
+
+def _normalize_mimic_race(value: object) -> str:
+    text = str(value).upper()
+    for group in ["WHITE", "BLACK", "HISPANIC", "ASIAN"]:
+        if group in text:
+            return group
+    return "OTHER"
+
+
+def _balanced_mimic_sample(metadata: pd.DataFrame, max_samples: int, seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    selected = []
+    per_label = max(1, max_samples // 2)
+    for label in [0, 1]:
+        indices = metadata.index[metadata["label"] == label].to_numpy()
+        take = min(len(indices), per_label)
+        selected.extend(rng.choice(indices, size=take, replace=False).tolist())
+    if len(selected) < max_samples:
+        remaining = np.setdiff1d(metadata.index.to_numpy(), np.asarray(selected, dtype=np.int64))
+        take = min(len(remaining), max_samples - len(selected))
+        selected.extend(rng.choice(remaining, size=take, replace=False).tolist())
+    return metadata.loc[selected].sample(frac=1.0, random_state=seed)
+
+
+def _mimic_patient_splits(
+    metadata: pd.DataFrame,
+    seed: int,
+    train_fraction: float,
+    calib0_fraction: float,
+    discovery_fraction: float,
+    mvcal_fraction: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    patient_labels = metadata.groupby("subject_id")["label"].max()
+    rng = np.random.default_rng(seed)
+    split_subjects = {"train": [], "calib0": [], "discovery": [], "mvcal": [], "test": []}
+    for label in [0, 1]:
+        subject_ids = rng.permutation(patient_labels.index[patient_labels == label].to_numpy())
+        n = len(subject_ids)
+        a = int(train_fraction * n)
+        b = int((train_fraction + calib0_fraction) * n)
+        c = int((train_fraction + calib0_fraction + discovery_fraction) * n)
+        d = int((train_fraction + calib0_fraction + discovery_fraction + mvcal_fraction) * n)
+        split_subjects["train"].extend(subject_ids[:a].tolist())
+        split_subjects["calib0"].extend(subject_ids[a:b].tolist())
+        split_subjects["discovery"].extend(subject_ids[b:c].tolist())
+        split_subjects["mvcal"].extend(subject_ids[c:d].tolist())
+        split_subjects["test"].extend(subject_ids[d:].tolist())
+    return tuple(
+        metadata.index[metadata["subject_id"].isin(split_subjects[name])].to_numpy(dtype=np.int64)
+        for name in ["train", "calib0", "discovery", "mvcal", "test"]
+    )
+
+
+def _mimic_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
+    age = pd.cut(metadata["anchor_age"].fillna(-1), bins=[-2, 40, 65, 120], labels=["age_le_40", "age_41_65", "age_gt_65"]).astype(str)
+    gender = metadata["gender"].fillna("UNKNOWN").astype(str)
+    race = metadata["race"].fillna("UNKNOWN").astype(str)
+    arrival = metadata["arrival_transport"].fillna("UNKNOWN").astype(str)
+    acuity = pd.cut(metadata["ed_acuity"].fillna(9), bins=[0, 2, 3, 9], labels=["acuity_1_2", "acuity_3", "acuity_4_5_or_unknown"]).astype(str)
+    values = {
+        "gender": gender,
+        "age": age,
+        "race": race,
+        "arrival": arrival,
+        "race_age": race + "_" + age,
+        "gender_age": gender + "_" + age,
+        "ed_acuity": acuity,
+        "icu_history": metadata["icu_history"].astype(str),
+    }
+    if group not in values:
+        raise ValueError(f"Unknown MIMIC known group: {group}")
+    return values[group].to_numpy()
+
+
 def _read_dicom_image(path: Path) -> Image.Image:
     try:
         import pydicom
@@ -357,6 +626,40 @@ def _rsna_known_group(metadata: pd.DataFrame) -> np.ndarray:
     return encoded.astype(np.int64)
 
 
+def _stratified_lesion_splits(
+    metadata: pd.DataFrame,
+    labels: np.ndarray,
+    seed: int,
+    train_fraction: float,
+    calib0_fraction: float,
+    discovery_fraction: float,
+    mvcal_fraction: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    metadata = metadata.copy()
+    metadata["label_index"] = labels
+    lesion_labels = metadata.groupby("lesion_id")["label_index"].first()
+    split_lesions = {"train": [], "calib0": [], "discovery": [], "mvcal": [], "test": []}
+    for label in sorted(lesion_labels.unique()):
+        lesion_ids = lesion_labels.index[lesion_labels == label].to_numpy()
+        lesion_ids = rng.permutation(lesion_ids)
+        n = len(lesion_ids)
+        a = int(train_fraction * n)
+        b = int((train_fraction + calib0_fraction) * n)
+        c = int((train_fraction + calib0_fraction + discovery_fraction) * n)
+        d = int((train_fraction + calib0_fraction + discovery_fraction + mvcal_fraction) * n)
+        split_lesions["train"].extend(lesion_ids[:a].tolist())
+        split_lesions["calib0"].extend(lesion_ids[a:b].tolist())
+        split_lesions["discovery"].extend(lesion_ids[b:c].tolist())
+        split_lesions["mvcal"].extend(lesion_ids[c:d].tolist())
+        split_lesions["test"].extend(lesion_ids[d:].tolist())
+
+    return tuple(
+        metadata.index[metadata["lesion_id"].isin(split_lesions[name])].to_numpy(dtype=np.int64)
+        for name in ["train", "calib0", "discovery", "mvcal", "test"]
+    )
+
+
 def _balanced_metadata_sample(metadata: pd.DataFrame, max_samples: int, seed: int) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     pieces = []
@@ -394,6 +697,19 @@ def _nih_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
     if group == "gender_view":
         return (gender + "_" + view).to_numpy()
     raise ValueError(f"Unknown NIH known group: {group}")
+
+
+def _ham10000_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
+    if group == "sex":
+        return metadata["sex"].fillna("unknown").astype(str).to_numpy()
+    if group == "localization":
+        return metadata["localization"].fillna("unknown").astype(str).to_numpy()
+    if group == "dx_type":
+        return metadata["dx_type"].fillna("unknown").astype(str).to_numpy()
+    if group == "age":
+        age = metadata["age"].fillna(-1).clip(-1, 100)
+        return pd.cut(age, bins=[-2, 30, 50, 70, 120], labels=["age_unknown_or_le_30", "age_31_50", "age_51_70", "age_gt_70"]).astype(str).to_numpy()
+    raise ValueError(f"Unknown HAM10000 known group: {group}")
 
 
 class ImageClassifier(nn.Module):

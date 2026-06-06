@@ -13,7 +13,7 @@ from core.conformal import classwise_quantiles, conformal_quantile, covered, gro
 from core.metrics import evaluate_classwise_model, evaluate_classifier, evaluate_groupwise_model, evaluate_threshold_model
 from core.progress import progress
 from core.rectification import fit_batch_gcp, fit_pool_mvp, fit_slice_quantile, fit_standard
-from data.images import load_imagefolder_experiment, load_nih_experiment, load_rsna_breast_experiment, predict_image_dataset, train_image_classifier
+from data.images import load_ham10000_experiment, load_imagefolder_experiment, load_mimic_joint_experiment, load_nih_experiment, load_rsna_breast_experiment, predict_image_dataset, train_image_classifier
 from reports.diagnostics import slice_repair_diagnostics
 from reports.output import print_results, write_results
 from slices.discovery import GroupFunction, class_conditional_groups, discover_coverage_domino, discover_error_domino, discover_gmm_unaware, discover_kmeans, discover_random_halfspace, select_group_pool
@@ -43,11 +43,6 @@ DATASET_PRESETS = {
         "dataset_root": Path("../dataset/bracs"),
         "cache_file": Path("results/bracs/features.npz"),
     },
-    "chest_xray": {
-        "dataset_root": Path("../dataset/chest_xray"),
-        "split_mode": "random_all",
-        "cache_file": Path("results/chest_xray/features.npz"),
-    },
     "nih": {
         "dataset_type": "nih",
         "dataset_root": Path("../dataset/NIH_ChestXrays"),
@@ -55,6 +50,22 @@ DATASET_PRESETS = {
         "known_group": "gender",
         "max_samples": 5000,
         "cache_file": Path("results/nih/features.npz"),
+    },
+    "ham10000": {
+        "dataset_type": "ham10000",
+        "dataset_root": Path("../dataset/HAM10000"),
+        "known_group": "sex",
+        "cache_file": Path("results/ham10000/features.npz"),
+    },
+    "mimic_effusion": {
+        "dataset_type": "mimic",
+        "dataset_root": Path("../dataset/MIMIC-CXR"),
+        "mimic_iv_root": Path("../dataset/mimic-iv-3.1"),
+        "mimic_ed_root": Path("../dataset/mimic-iv-ed-2.2"),
+        "mimic_target": "Pleural Effusion",
+        "known_group": "race",
+        "max_samples": 5000,
+        "cache_file": Path("results/mimic_effusion/features.npz"),
     },
     "rsna_5k": {
         "dataset_type": "rsna_5k",
@@ -79,10 +90,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hyperparams", type=Path, default=None)
     parser.add_argument("--hyperparams-key", default=None)
     parser.add_argument("--dataset-root", type=Path, default=Path("../dataset/bracs"))
-    parser.add_argument("--dataset-type", choices=["imagefolder", "nih", "rsna_5k"], default="imagefolder")
+    parser.add_argument("--dataset-type", choices=["imagefolder", "nih", "ham10000", "mimic", "rsna_5k"], default="imagefolder")
     parser.add_argument("--split-mode", choices=["official_test", "random_all"], default="official_test")
     parser.add_argument("--nih-target", default="Effusion")
-    parser.add_argument("--known-group", choices=["gender", "age", "view", "gender_age", "gender_view"], default="gender")
+    parser.add_argument("--mimic-target", choices=["Pleural Effusion", "Pneumonia", "Pneumothorax", "Pulmonary Edema", "Cardiomegaly"], default="Pleural Effusion")
+    parser.add_argument("--mimic-iv-root", type=Path, default=Path("../dataset/mimic-iv-3.1"), help=argparse.SUPPRESS)
+    parser.add_argument("--mimic-ed-root", type=Path, default=Path("../dataset/mimic-iv-ed-2.2"), help=argparse.SUPPRESS)
+    parser.add_argument("--known-group", choices=["gender", "age", "view", "gender_age", "gender_view", "sex", "localization", "dx_type", "race", "arrival", "race_age", "ed_acuity", "icu_history"], default="gender")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--outdir", type=Path, default=Path("results/bracs"))
     parser.add_argument("--device", default="cuda")
@@ -266,19 +280,17 @@ def run_experiment(args: argparse.Namespace, show_progress: bool = True, write_c
                         base_q,
                     )
                 )
-        if "batch_gcp" in RECTIFIERS:
-            observed_for_method = mv_pool_scores if method == "candidate_pool" else mv_observed_scores
-            test_scores_for_method = test_pool_scores if method == "candidate_pool" else test_observed_scores
+        if "batch_gcp" in RECTIFIERS and method == "candidate_pool":
             rect = fit_batch_gcp(
                 base_q,
                 groups,
                 embeddings[data.mvcal_idx],
                 mv_scores,
                 args.alpha,
-                observed_scores=observed_for_method,
+                observed_scores=mv_pool_scores,
                 min_size=args.rectifier_min_size,
             )
-            rows.append(_eval(_method_display_name(method, "batch_gcp"), rect, embeddings, score_matrix, data, test_idx, eval_groups, args.alpha, observed_scores=test_scores_for_method, eval_observed_scores=eval_observed_scores))
+            rows.append(_eval(_method_display_name(method, "batch_gcp"), rect, embeddings, score_matrix, data, test_idx, eval_groups, args.alpha, observed_scores=test_pool_scores, eval_observed_scores=eval_observed_scores))
     if not args.diagnostics:
         return pd.DataFrame(rows)
 
@@ -301,6 +313,23 @@ def load_experiment_data(args: argparse.Namespace):
     if args.dataset_type == "rsna_5k":
         return load_rsna_breast_experiment(
             args.dataset_root,
+            seed=args.seed,
+            max_samples=args.max_samples,
+        )
+    if args.dataset_type == "ham10000":
+        return load_ham10000_experiment(
+            args.dataset_root,
+            known_group=args.known_group,
+            seed=args.seed,
+            max_samples=args.max_samples,
+        )
+    if args.dataset_type == "mimic":
+        return load_mimic_joint_experiment(
+            args.dataset_root,
+            args.mimic_iv_root,
+            args.mimic_ed_root,
+            target=args.mimic_target,
+            known_group=args.known_group,
             seed=args.seed,
             max_samples=args.max_samples,
         )
@@ -465,9 +494,12 @@ def average_runs(frames: list[pd.DataFrame]) -> pd.DataFrame:
 
 
 def _print_run_settings(args: argparse.Namespace, device: str) -> None:
+    task = args.mimic_target if args.dataset_type == "mimic" else args.nih_target if args.dataset_type == "nih" else "-"
     print(
         "settings: "
         f"dataset_type={args.dataset_type}, "
+        f"task={task}, "
+        f"known_group={args.known_group}, "
         f"dataset_root={args.dataset_root}, "
         f"split={args.split_mode}, "
         f"backbone={args.backbone}, "
@@ -608,14 +640,9 @@ def _method_display_name(discovery_method: str, rectifier: str) -> str:
         ("candidate_pool", "pool_mvp"): "DOCP-MVP",
         ("candidate_pool", "batch_gcp"): "DOCP",
         ("random_halfspace", "slice_quantile"): "Random halfspace",
-        ("random_halfspace", "batch_gcp"): "Random halfspace GCP",
-        ("coverage_domino", "batch_gcp"): "Coverage-Domino GCP",
         ("coverage_domino", "slice_quantile"): "Coverage-Domino",
-        ("kmeans", "batch_gcp"): "K-means GCP",
         ("kmeans", "slice_quantile"): "K-means",
-        ("gmm_unaware", "batch_gcp"): "GMM-unaware GCP",
         ("gmm_unaware", "slice_quantile"): "GMM-unaware",
-        ("error_domino", "batch_gcp"): "Error-slice GCP",
         ("error_domino", "slice_quantile"): "Error-slice",
     }
     return names.get((discovery_method, rectifier), f"{discovery_method} {rectifier}")
