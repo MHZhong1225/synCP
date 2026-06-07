@@ -8,7 +8,7 @@ import pandas as pd
 
 from core.conformal import classwise_quantiles, conformal_quantile, covered, groupwise_quantiles, observable_uncertainty, score_matrix_from_probs, true_label_scores
 from core.metrics import evaluate_classwise_model, evaluate_groupwise_model, evaluate_threshold_model
-from core.rectification import fit_batch_gcp, fit_standard
+from core.rectification import fit_batch_gcp, fit_standard, fit_target_aware_gcp
 from experiments import images as image_experiment
 from reports.output import write_results
 from runners.analyze_seed_stability import _image_args
@@ -26,6 +26,8 @@ METHOD_GROUPS = {
     "DOCP": "Original",
     "Consensus-Hard": "Ours",
     "Consensus-Soft": "Ours",
+    "Consensus-TargetAware": "Ours",
+    "Consensus-Conditional": "Ours",
 }
 
 
@@ -136,8 +138,20 @@ def run_dataset(dataset: str, args: argparse.Namespace) -> tuple[pd.DataFrame, p
         max_groups=image_args.pool_groups,
     )
     naive_pool = _naive_docp_pool(image_args, inputs, embeddings, probs, data, discovery_failures)
-    shared_groups = _shared_groups(naive_pool, consensus_groups)
-    summary = _evaluate_methods(dataset, image_args, data, embeddings, probs, score_matrix, base_q, shared_groups, naive_pool, consensus_groups)
+    conditional_groups = select_group_pool(
+        {"consensus": class_conditional_groups(consensus_groups, len(data.class_names))},
+        embeddings[data.discovery_idx],
+        probs[data.discovery_idx],
+        discovery_failures,
+        image_args.alpha,
+        methods=("consensus",),
+        min_size=image_args.min_size,
+        epsilon=image_args.epsilon,
+        enrichment=image_args.enrichment,
+        max_groups=image_args.pool_groups,
+    )
+    shared_groups = _shared_groups(naive_pool, consensus_groups, conditional_groups)
+    summary = _evaluate_methods(dataset, image_args, data, embeddings, probs, score_matrix, base_q, shared_groups, naive_pool, consensus_groups, conditional_groups)
     return (
         summary,
         _evidence_frame(dataset, evidence, consensus_groups),
@@ -152,7 +166,7 @@ def _naive_docp_pool(image_args, inputs, embeddings, probs, data, discovery_fail
     return select_group_pool(source_outputs, embeddings[data.discovery_idx], probs[data.discovery_idx], discovery_failures, image_args.alpha, methods=tuple(image_experiment.POOL_METHODS), min_size=image_args.min_size, epsilon=image_args.epsilon, enrichment=image_args.enrichment, max_groups=image_args.pool_groups)
 
 
-def _evaluate_methods(dataset, image_args, data, embeddings, probs, score_matrix, base_q, shared_groups, naive_pool, consensus_groups):
+def _evaluate_methods(dataset, image_args, data, embeddings, probs, score_matrix, base_q, shared_groups, naive_pool, consensus_groups, conditional_groups):
     test = data.test_idx
     known_test = data.known_group[test] if data.known_group is not None else None
     rows = [evaluate_threshold_model("Standard CP", fit_standard(base_q), embeddings[test], score_matrix[test], data.labels[test], None, known_test, shared_groups, image_args.alpha, observed_scores=probs[test], eval_observed_scores=probs[test])]
@@ -163,14 +177,17 @@ def _evaluate_methods(dataset, image_args, data, embeddings, probs, score_matrix
         rows.append(evaluate_groupwise_model("Known-group CP", known_q, embeddings[test], score_matrix[test], data.labels[test], data.known_group[test], None, known_test, shared_groups, image_args.alpha, observed_scores=probs[test], eval_observed_scores=probs[test]))
     mv_scores = true_label_scores(score_matrix[data.mvcal_idx], data.labels[data.mvcal_idx])
     hard = fit_batch_gcp(base_q, consensus_groups, embeddings[data.mvcal_idx], mv_scores, image_args.alpha, observed_scores=probs[data.mvcal_idx], min_size=image_args.rectifier_min_size)
+    target_aware = fit_target_aware_gcp(base_q, consensus_groups, embeddings[data.mvcal_idx], mv_scores, score_matrix[data.mvcal_idx], image_args.alpha, observed_scores=probs[data.mvcal_idx], min_size=image_args.rectifier_min_size)
+    conditional = fit_batch_gcp(base_q, conditional_groups, embeddings[data.mvcal_idx], mv_scores, image_args.alpha, observed_scores=probs[data.mvcal_idx], min_size=image_args.rectifier_min_size)
     soft = fit_soft_consensus(base_q, consensus_groups, embeddings[data.mvcal_idx], mv_scores, image_args.alpha, observed_scores=probs[data.mvcal_idx], min_size=image_args.rectifier_min_size)
     docp = fit_batch_gcp(base_q, naive_pool, embeddings[data.mvcal_idx], mv_scores, image_args.alpha, observed_scores=probs[data.mvcal_idx], min_size=image_args.rectifier_min_size)
-    for name, model, own_groups in [("DOCP", docp, naive_pool), ("Consensus-Hard", hard, consensus_groups), ("Consensus-Soft", soft, consensus_groups)]:
+    for name, model, own_groups in [("DOCP", docp, naive_pool), ("Consensus-Hard", hard, consensus_groups), ("Consensus-Soft", soft, consensus_groups), ("Consensus-TargetAware", target_aware, consensus_groups), ("Consensus-Conditional", conditional, conditional_groups)]:
         rows.append(evaluate_threshold_model(name, model, embeddings[test], score_matrix[test], data.labels[test], None, known_test, shared_groups, image_args.alpha, observed_scores=probs[test], eval_observed_scores=probs[test], own_groups=own_groups))
     frame = pd.DataFrame(rows)
     frame.insert(0, "dataset", dataset)
     frame.insert(1, "group", frame["method"].map(METHOD_GROUPS))
-    frame["num_selected_slices"] = frame["method"].map({"DOCP": len(naive_pool), "Consensus-Hard": len(consensus_groups), "Consensus-Soft": len(consensus_groups)})
+    frame["num_selected_slices"] = frame["method"].map({"DOCP": len(naive_pool), "Consensus-Hard": len(consensus_groups), "Consensus-Soft": len(consensus_groups), "Consensus-TargetAware": len(consensus_groups), "Consensus-Conditional": len(conditional_groups)})
+    frame["repair_scale"] = frame["method"].map({"Consensus-TargetAware": target_aware.repair_scale})
     return frame
 
 
@@ -210,14 +227,14 @@ def _pool_frame(dataset, naive_pool, consensus_groups, test_embeddings, test_sco
 
 
 def _aggregate_results(frame: pd.DataFrame) -> pd.DataFrame:
-    metrics = ["marginal_coverage", "worst_class_coverage", "worst_known_group_coverage", "worst_shared_discovered_slice_coverage", "worst_own_pool_coverage", "avg_set_size", "max_undercoverage_gap", "num_selected_slices"]
+    metrics = ["marginal_coverage", "worst_class_coverage", "worst_known_group_coverage", "worst_shared_discovered_slice_coverage", "worst_own_pool_coverage", "avg_set_size", "max_undercoverage_gap", "num_selected_slices", "repair_scale"]
     aggregate = frame.groupby(["group", "method"], as_index=False)[metrics].mean(numeric_only=True)
     aggregate.insert(0, "dataset", "mean_across_datasets")
     return aggregate
 
 
 def _write_table(frame: pd.DataFrame, path: Path) -> None:
-    columns = ["dataset", "group", "method", "marginal_coverage", "worst_class_coverage", "worst_known_group_coverage", "worst_shared_discovered_slice_coverage", "worst_own_pool_coverage", "avg_set_size", "max_undercoverage_gap", "num_selected_slices"]
+    columns = ["dataset", "group", "method", "marginal_coverage", "worst_class_coverage", "worst_known_group_coverage", "worst_shared_discovered_slice_coverage", "worst_own_pool_coverage", "avg_set_size", "max_undercoverage_gap", "num_selected_slices", "repair_scale"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(frame[[column for column in columns if column in frame]].round(5).fillna("").to_markdown(index=False), encoding="utf-8")
 
