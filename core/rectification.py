@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from core.conformal import conformal_quantile
+from core.conformal import conformal_quantile, set_sizes
 from slices.discovery import GroupFunction
 
 
@@ -17,6 +17,7 @@ class ThresholdModel:
     bin_edges: np.ndarray | None = None
     group_bin_thresholds: np.ndarray | None = None
     mode: str = "standard"
+    repair_scale: float = 1.0
 
     def thresholds(self, z: np.ndarray, observed_scores: np.ndarray | None = None, score_matrix: np.ndarray | None = None) -> np.ndarray:
         n = len(z)
@@ -129,6 +130,84 @@ def fit_batch_gcp(
     return ThresholdModel(base_threshold=base_threshold, groups=groups, group_thresholds=group_thresholds, mode="batch_gcp")
 
 
+def fit_target_aware_gcp(
+    base_threshold: float,
+    groups: list[GroupFunction],
+    z: np.ndarray,
+    true_scores: np.ndarray,
+    score_matrix: np.ndarray,
+    alpha: float,
+    observed_scores: np.ndarray | None = None,
+    min_size: int = 20,
+    marginal_tolerance: float = 0.01,
+    subgroup_tolerance: float = 0.03,
+    scale_grid: np.ndarray | None = None,
+) -> ThresholdModel:
+    """Scale group repairs to balance target coverage, subgroup deficit, and size.
+
+    The scale is selected only on the multivalid calibration split. Full
+    BatchGCP thresholds define the repair direction; a shared scale controls
+    how strongly overlapping local repairs increase the final threshold.
+    """
+    full = fit_batch_gcp(
+        base_threshold,
+        groups,
+        z,
+        true_scores,
+        alpha,
+        observed_scores=observed_scores,
+        min_size=min_size,
+    )
+    if not groups or full.group_thresholds is None:
+        return full
+    memberships = np.column_stack([group.membership(z, observed_scores) for group in groups])
+    valid_groups = [memberships[:, index] for index in range(len(groups)) if memberships[:, index].sum() >= min_size]
+    target = 1.0 - alpha
+    scales = np.asarray(scale_grid if scale_grid is not None else np.linspace(0.0, 1.0, 21), dtype=np.float64)
+    lower_coverages = np.linspace(max(0.50, target - 0.20), target, 9)
+    base_candidates = np.unique(
+        np.concatenate(
+            [
+                np.asarray([base_threshold]),
+                np.quantile(true_scores, lower_coverages, method="higher"),
+            ]
+        )
+    )
+    candidates = []
+    for candidate_base in base_candidates:
+        for scale in scales:
+            thresholds = candidate_base + scale * (full.group_thresholds - candidate_base)
+            q = _thresholds_from_memberships(candidate_base, memberships, thresholds)
+            coverage = true_scores <= q
+            marginal = float(coverage.mean())
+            worst_group = min((float(coverage[mask].mean()) for mask in valid_groups), default=marginal)
+            avg_size = float(set_sizes(score_matrix, q).mean())
+            in_target_band = abs(marginal - target) <= marginal_tolerance
+            feasible = in_target_band and worst_group >= target - subgroup_tolerance
+            loss = (
+                4.0 * max(0.0, target - marginal)
+                + 2.0 * max(0.0, target - worst_group)
+                + abs(marginal - target)
+                + 0.01 * avg_size
+            )
+            candidates.append((feasible, in_target_band, avg_size, abs(marginal - target), worst_group, loss, float(scale), float(candidate_base), thresholds))
+    feasible = [candidate for candidate in candidates if candidate[0]]
+    in_band = [candidate for candidate in candidates if candidate[1]]
+    if feasible:
+        chosen = min(feasible, key=lambda item: (-item[4], item[2], item[3]))
+    elif in_band:
+        chosen = min(in_band, key=lambda item: (-item[4], item[2], item[3]))
+    else:
+        chosen = min(candidates, key=lambda item: (item[3], -item[4], item[2]))
+    return ThresholdModel(
+        groups=groups,
+        base_threshold=chosen[-2],
+        group_thresholds=chosen[-1],
+        mode="batch_gcp",
+        repair_scale=chosen[-3],
+    )
+
+
 def fit_pool_mvp(
     base_threshold: float,
     groups: list[GroupFunction],
@@ -194,6 +273,17 @@ def _max_offset_thresholds(base_threshold: float, memberships: np.ndarray, offse
         if offset <= 0:
             continue
         q[memberships[:, idx]] = np.maximum(q[memberships[:, idx]], base_threshold + offset)
+    return q
+
+
+def _thresholds_from_memberships(
+    base_threshold: float,
+    memberships: np.ndarray,
+    group_thresholds: np.ndarray,
+) -> np.ndarray:
+    q = np.full(memberships.shape[0], base_threshold, dtype=np.float64)
+    for index, threshold in enumerate(group_thresholds):
+        q[memberships[:, index]] = np.maximum(q[memberships[:, index]], threshold)
     return q
 
 

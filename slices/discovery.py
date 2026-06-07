@@ -5,6 +5,7 @@ from typing import Protocol
 
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.linear_model import LogisticRegression
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 
@@ -56,6 +57,18 @@ class KMeansGroup:
     def membership(self, z: np.ndarray, observed_scores: np.ndarray | None = None) -> np.ndarray:
         transformed = self.scaler.transform(z)
         return self.kmeans.predict(transformed) == self.cluster
+
+
+@dataclass
+class UndercoverageRiskGroup:
+    name: str
+    scaler: StandardScaler
+    model: LogisticRegression
+    threshold: float
+
+    def membership(self, z: np.ndarray, observed_scores: np.ndarray | None = None) -> np.ndarray:
+        risk = self.model.predict_proba(self.scaler.transform(z))[:, 1]
+        return risk >= self.threshold
 
 
 @dataclass
@@ -402,6 +415,60 @@ def discover_kmeans(
     kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init="auto").fit(scaler.transform(z))
     candidates = [KMeansGroup(name=f"kmeans_c{k}", scaler=scaler, kmeans=kmeans, cluster=k) for k in range(n_clusters)]
     return _filter_groups(candidates, z, observed_scores, failures, alpha, "kmeans", min_size, epsilon, enrichment, max_groups)
+
+
+def discover_undercoverage_risk(
+    z: np.ndarray,
+    observed_scores: np.ndarray,
+    failures: np.ndarray,
+    alpha: float,
+    quantiles: tuple[float, ...] = (0.60, 0.70, 0.80, 0.90),
+    min_size: int = 40,
+    epsilon: float = 0.03,
+    enrichment: float = 1.20,
+    max_groups: int = 8,
+    seed: int = 7,
+) -> tuple[list[GroupFunction], list[SliceDiagnostics]]:
+    """Directly score future examples by learned conformal-failure risk."""
+    if np.unique(failures).size < 2:
+        return [], []
+    scaler = StandardScaler().fit(z)
+    transformed = scaler.transform(z)
+    model = _fit_undercoverage_risk_model(transformed, failures, seed)
+    risk = model.predict_proba(transformed)[:, 1]
+    candidates = [
+        UndercoverageRiskGroup(
+            name=f"undercoverage_risk_q{quantile:.2f}",
+            scaler=scaler,
+            model=model,
+            threshold=float(np.quantile(risk, quantile)),
+        )
+        for quantile in quantiles
+    ]
+    return _filter_groups(candidates, z, observed_scores, failures, alpha, "undercoverage_risk", min_size, epsilon, enrichment, max_groups)
+
+
+def _fit_undercoverage_risk_model(
+    transformed: np.ndarray,
+    failures: np.ndarray,
+    seed: int,
+) -> LogisticRegression:
+    rng = np.random.default_rng(seed)
+    bootstrap = rng.choice(len(transformed), size=len(transformed), replace=True)
+    return LogisticRegression(
+        C=0.25,
+        class_weight="balanced",
+        max_iter=500,
+        random_state=seed,
+        solver="liblinear",
+    ).fit(transformed[bootstrap], failures[bootstrap])
+
+
+def _region_count(mask: np.ndarray, max_regions: int, min_size: int) -> int:
+    high_risk_size = int(mask.sum())
+    if high_risk_size < 2 * min_size:
+        return 0
+    return max(2, min(max_regions, high_risk_size // min_size))
 
 
 def discover_high_score(

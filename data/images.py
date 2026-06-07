@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 import re
 import warnings
 from pathlib import Path
@@ -71,6 +72,31 @@ class DicomRecordsDataset(Dataset):
     def __getitem__(self, index: int):
         image = _read_dicom_image(self.paths[index])
         return self.transform(image), int(self.labels[index])
+
+
+class Hdf5ImageDataset(Dataset):
+    def __init__(self, path: Path, image_ids: list[str], labels: np.ndarray, transform) -> None:
+        self.path = path
+        self.image_ids = image_ids
+        self.labels = labels
+        self.transform = transform
+        self._file = None
+
+    def __len__(self) -> int:
+        return len(self.image_ids)
+
+    def __getitem__(self, index: int):
+        if self._file is None:
+            import h5py
+
+            self._file = h5py.File(self.path, "r")
+        image = Image.open(BytesIO(self._file[self.image_ids[index]][()])).convert("RGB")
+        return self.transform(image), int(self.labels[index])
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_file"] = None
+        return state
 
 
 def load_imagefolder_experiment(
@@ -319,6 +345,65 @@ def load_ham10000_experiment(
         discovery_idx=discovery_idx,
         mvcal_idx=mvcal_idx,
         test_idx=test_idx,
+        known_group=encoded_groups.astype(np.int64),
+    )
+
+
+def load_isic_experiment(
+    root: Path,
+    known_group: str = "source",
+    seed: int = 7,
+    image_size: int = 224,
+    max_samples: int | None = 20000,
+    train_fraction: float = 0.50,
+    calib0_fraction: float = 0.15,
+    discovery_fraction: float = 0.15,
+    mvcal_fraction: float = 0.10,
+) -> ImageExperimentData:
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    metadata = pd.read_csv(root / "metadata.csv", low_memory=False)
+    image_store = root / "image_256sq.hdf5"
+    if not image_store.exists():
+        raise FileNotFoundError(f"Expected ISIC image store: {image_store}")
+    metadata = metadata[metadata["image_type"].eq("dermoscopic") & metadata["diagnosis"].notna()].copy()
+    common_diagnoses = metadata["diagnosis"].value_counts()
+    metadata = metadata[metadata["diagnosis"].isin(common_diagnoses[common_diagnoses >= 300].index)].copy()
+    if max_samples is not None and len(metadata) > max_samples:
+        metadata = _balanced_image_sample(metadata, "diagnosis", max_samples, seed)
+    metadata = metadata.reset_index(drop=True)
+
+    class_names = sorted(metadata["diagnosis"].unique().tolist())
+    class_to_index = {name: index for index, name in enumerate(class_names)}
+    labels = metadata["diagnosis"].map(class_to_index).to_numpy(dtype=np.int64)
+    metadata["label_index"] = labels
+    metadata["entity_id"] = _isic_entity_ids(metadata)
+    group_values = _isic_group_values(metadata, known_group)
+    _, encoded_groups = np.unique(group_values, return_inverse=True)
+    splits = _stratified_entity_splits(
+        metadata,
+        entity_column="entity_id",
+        label_column="label_index",
+        seed=seed,
+        train_fraction=train_fraction,
+        calib0_fraction=calib0_fraction,
+        discovery_fraction=discovery_fraction,
+        mvcal_fraction=mvcal_fraction,
+    )
+    return ImageExperimentData(
+        dataset=Hdf5ImageDataset(image_store, metadata["isic_id"].astype(str).tolist(), labels, transform),
+        labels=labels,
+        class_names=class_names,
+        train_idx=splits[0],
+        calib0_idx=splits[1],
+        discovery_idx=splits[2],
+        mvcal_idx=splits[3],
+        test_idx=splits[4],
         known_group=encoded_groups.astype(np.int64),
     )
 
@@ -658,6 +743,61 @@ def _stratified_lesion_splits(
         metadata.index[metadata["lesion_id"].isin(split_lesions[name])].to_numpy(dtype=np.int64)
         for name in ["train", "calib0", "discovery", "mvcal", "test"]
     )
+
+
+def _stratified_entity_splits(
+    metadata: pd.DataFrame,
+    entity_column: str,
+    label_column: str,
+    seed: int,
+    train_fraction: float,
+    calib0_fraction: float,
+    discovery_fraction: float,
+    mvcal_fraction: float,
+) -> tuple[np.ndarray, ...]:
+    entity_labels = metadata.groupby(entity_column)[label_column].agg(lambda values: int(values.mode().iloc[0]))
+    rng = np.random.default_rng(seed)
+    split_entities = {name: [] for name in ["train", "calib0", "discovery", "mvcal", "test"]}
+    for label in sorted(entity_labels.unique()):
+        entities = rng.permutation(entity_labels.index[entity_labels == label].to_numpy())
+        cuts = (
+            np.asarray(
+                [
+                    train_fraction,
+                    train_fraction + calib0_fraction,
+                    train_fraction + calib0_fraction + discovery_fraction,
+                    train_fraction + calib0_fraction + discovery_fraction + mvcal_fraction,
+                ]
+            )
+            * len(entities)
+        ).astype(int)
+        for name, values in zip(split_entities, np.split(entities, cuts)):
+            split_entities[name].extend(values.tolist())
+    return tuple(
+        metadata.index[metadata[entity_column].isin(split_entities[name])].to_numpy(dtype=np.int64)
+        for name in split_entities
+    )
+
+
+def _isic_entity_ids(metadata: pd.DataFrame) -> np.ndarray:
+    patient = metadata["patient_id"].fillna("").astype(str)
+    lesion = metadata["lesion_id"].fillna("").astype(str)
+    image = metadata["isic_id"].astype(str)
+    return np.where(patient.ne(""), "patient:" + patient, np.where(lesion.ne(""), "lesion:" + lesion, "image:" + image))
+
+
+def _isic_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
+    values = {
+        "source": metadata["attribution"].fillna("UNKNOWN").astype(str),
+        "sex": metadata["sex"].fillna("UNKNOWN").astype(str),
+        "age_group": pd.cut(metadata["age_approx"].fillna(-1), bins=[-2, 30, 50, 70, 120], labels=["age_unknown_or_le_30", "age_31_50", "age_51_70", "age_gt_70"]).astype(str),
+        "anatom_site": metadata["anatom_site_general"].fillna("UNKNOWN").astype(str),
+        "confirmation": metadata["diagnosis_confirm_type"].fillna("UNKNOWN").astype(str),
+        "skin_type": metadata["fitzpatrick_skin_type"].fillna("UNKNOWN").astype(str),
+    }
+    if group not in values:
+        raise ValueError(f"Unknown ISIC known group: {group}")
+    return values[group].to_numpy()
 
 
 def _balanced_metadata_sample(metadata: pd.DataFrame, max_samples: int, seed: int) -> pd.DataFrame:

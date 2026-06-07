@@ -88,6 +88,26 @@ DATASETS = {
             "--cache",
         ],
     },
+    "mimic_care": {
+        "module": "experiments.mimic_care",
+        "args": ["--cache"],
+    },
+    "isic": {
+        "module": "experiments.images",
+        "args": [
+            "--dataset-type",
+            "isic",
+            "--dataset-root",
+            "../dataset/ISIC",
+            "--known-group",
+            "source",
+            "--max-samples",
+            "20000",
+            "--cache-file",
+            "results/isic/features.npz",
+            "--cache",
+        ],
+    },
     "synthetic": {"module": "experiments.synthetic", "args": []},
 }
 

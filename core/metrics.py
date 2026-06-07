@@ -40,9 +40,11 @@ def evaluate_threshold_model(
         "avg_set_size": float(sizes.mean()),
         "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
     }
+    _add_target_metrics(row, alpha)
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
+    row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
     row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     worst_values = [
@@ -193,9 +195,11 @@ def evaluate_classwise_model(
         "avg_set_size": float(sizes.mean()),
         "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
     }
+    _add_target_metrics(row, alpha)
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
+    row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
     row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
@@ -234,9 +238,11 @@ def evaluate_groupwise_model(
         "avg_set_size": float(sizes.mean()),
         "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
     }
+    _add_target_metrics(row, alpha)
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
+    row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
     row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
@@ -299,6 +305,15 @@ def _benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
     return np.clip(adjusted, 0.0, 1.0)
 
 
+def _add_target_metrics(row: dict[str, float | str | int], alpha: float) -> None:
+    target = 1.0 - alpha
+    marginal = float(row["marginal_coverage"])
+    row["target_coverage"] = target
+    row["marginal_target_error"] = abs(marginal - target)
+    row["marginal_undercoverage"] = max(0.0, target - marginal)
+    row["marginal_overcoverage"] = max(0.0, marginal - target)
+
+
 def _add_group_coverage_metrics(
     row: dict[str, float | str | int],
     discovered_groups: list[GroupFunction],
@@ -345,3 +360,14 @@ def _worst_label_coverage(labels: np.ndarray | None, covered_mask: np.ndarray, m
         if mask.sum() >= min_size:
             values.append(float(covered_mask[mask].mean()))
     return float(min(values)) if values else float("nan")
+
+
+def _label_coverages(prefix: str, labels: np.ndarray | None, covered_mask: np.ndarray, min_size: int = 20) -> dict[str, float]:
+    if labels is None:
+        return {}
+    values = {}
+    for label in np.unique(labels):
+        mask = labels == label
+        if mask.sum() >= min_size:
+            values[f"{prefix}_{label}"] = float(covered_mask[mask].mean())
+    return values
