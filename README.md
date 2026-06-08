@@ -1,8 +1,10 @@
-# DOCP
+# SCOPE
 
-DOCP builds a sparse coverage-driven pool of hidden undercoverage slices and
-repairs them with BatchGCP recalibration. The main method is reported as
-`DOCP`.
+SCOPE studies hidden undercoverage in medical prediction sets. The current
+implementation uses repeated latent slice discovery, consensus aggregation on
+an independent anchor split, and evidence-gated BatchGCP calibration. The main
+reported methods are `Consensus-KMeans` and
+`Consensus-UndercoverageRisk`.
 
 ## Project Layout
 
@@ -12,7 +14,7 @@ slices/        candidate slice discovery and coverage-driven pool selection
 data/          synthetic and image dataset loaders
 experiments/   synthetic and image experiment entry points
 reports/       result formatting and report helpers
-runners/       compact search utilities
+runners/       maintained batch runners and benchmark helpers
 ```
 
 Run experiments from the repository root:
@@ -139,49 +141,27 @@ python -m experiments.images --preset bracs --outdir results/bracs_chexnet --bac
 Feature caches are backbone-specific. Rerun without `--cache` when
 switching backbones.
 
-A compact backbone search template is provided at:
-
-```text
-configs/image_backbone_search.json
-```
-
-Run the search with:
-
-```bash
-python -m runners.image_search --config configs/image_backbone_search.json --outdir results/bracs_backbone_search --cuda 0
-```
-
 ## Method Groups
 
-Main-result baselines are methods that are not part of the DOCP candidate pool:
+Main-result baselines:
 
 ```text
 Standard CP
 Classwise CP
 Known-group CP
-Error-slice
-K-means
 ```
 
-Single-generator variants from the DOCP candidate pool are reported as
-ablations, not external baselines:
+Main SCOPE methods:
 
 ```text
-Random halfspace
-GMM-unaware
-Coverage-Domino
+Consensus-KMeans
+Consensus-UndercoverageRisk
 ```
 
-The formal full benchmark does not report `GMM-unaware` as a standalone
-baseline. The original DOCP candidate pool is kept unchanged.
-
-The main method is:
-
-```text
-DOCP
-```
-
-It uses the coverage-driven candidate pool and BatchGCP recalibration.
+Both methods keep cached model predictions fixed, discover candidate latent
+regions on the discovery split, aggregate repeated discoveries on the
+independent anchor/rectification split, and apply BatchGCP without using test
+labels for method selection.
 
 ## Multi-Seed Image Runs
 
@@ -211,29 +191,36 @@ Per-seed directories are temporary and are deleted after aggregation.
 Run BRACS, 14 NIH one-vs-rest tasks, ISIC, HAM10000, RSNA, and MIMIC Care:
 
 ```bash
-conda run -n ucp python -m runners.run_full_benchmark
+conda run -n ucp python -m runners.run_final_consensus_benchmark
 ```
 
-The full benchmark compares Standard CP, Classwise CP, Known-group CP, DOCP,
-EE, and consensus variants. It uses 10 Coverage-Domino discovery seeds for
-the stability variants and does not include a standalone GMM discovery
-baseline.
+The final benchmark compares Standard CP, Classwise CP, Known-group CP,
+Consensus-KMeans, and Consensus-UndercoverageRisk. K-means uses five discovery
+seeds by default; Undercoverage-Risk uses ten seeds by default.
 
 Method runtimes exclude cached feature extraction and classifier training.
-They include discovery, aggregation, rectification, and unified slice
-auditing/evaluation. Formal outputs and the Chinese analysis are written to:
+They include discovery, consensus aggregation, calibration, and evaluation.
+Outputs are written to:
 
 ```text
-results/full_benchmark/
-results/full_benchmark/chinese_analysis.md
+results/final_consensus_benchmark/
 ```
 
 Formal result tables keep only the core coverage, efficiency, subgroup, task,
 and selected-slice metrics. Known-group coverage is expanded into one column
 per observed subgroup, such as `known_group_coverage_gender_group_0`.
-Consensus methods are always placed at the end of result tables.
+Consensus methods are always placed after the baselines in result tables.
 
-Discovery-source ablation for Consensus-Hard:
+MIMIC-CXR consensus benchmark with MIMIC-IV and MIMIC-IV-ED groups:
+
+```bash
+conda run -n ucp python -m runners.run_mimic_cxr_consensus
+```
+
+This evaluates five CXR report-label targets against race, ED acuity, and ICU
+history groups. Results are written to `results/mimic_cxr_consensus/`.
+
+Discovery-source ablation:
 
 ```bash
 conda run -n ucp python -m runners.ablate_consensus_discovery \
@@ -245,27 +232,46 @@ This compares Coverage-Domino, direct Undercoverage-Risk discovery, K-means,
 and Random-Halfspace while keeping consensus aggregation and rectification
 fixed. Results are written to `results/consensus_discovery_ablation/`.
 
+Seed-count ablation:
+
+```bash
+conda run -n ucp python -m runners.ablate_consensus_seed_count \
+  --tasks bracs nih_all isic ham10000 rsna_5k mimic_care
+```
+
+This compares how many discovery seeds are needed for K-means and
+Undercoverage-Risk. Results are written to
+`results/consensus_seed_count_ablation/`.
+
+## Runner Reference
+
+The maintained files in `runners/` are:
+
+| File | Role |
+| --- | --- |
+| `run_final_consensus_benchmark.py` | Main all-dataset SCOPE benchmark. |
+| `run_mimic_cxr_consensus.py` | MIMIC-CXR benchmark over report targets and MIMIC-IV/ED groups. |
+| `run_nih_ovr.py` | Builds NIH one-vs-rest caches/results for all selected disease labels. |
+| `run_mimic_targets.py` | Builds MIMIC-CXR target caches/results for the five report-label tasks. |
+| `ablate_consensus_discovery.py` | Compares discovery sources under the same consensus and BatchGCP pipeline. |
+| `ablate_consensus_seed_count.py` | Compares one to twenty discovery seeds for the final discovery sources. |
+| `analyze_seed_stability.py` | Diagnostic for discovery instability with fixed cached features and splits. |
+| `benchmark_complex_subgroups.py` | Controlled stress test with synthetic hidden groups in real embedding spaces. |
+| `benchmark_tasks.py` | Shared task loading and result-column helpers; not a command-line experiment. |
+
 ## Output
 
 Every CSV and terminal table rounds numeric values to five decimal places.
-Rows are ordered with baselines first, ablations next, and our method `DOCP` as
-the final row.
+Rows are ordered with baselines first and consensus methods after the baselines.
 
-`worst_discovered_slice_coverage` is evaluated on the shared union of discovered
-slices, so methods are compared on the same slice collection.
+The main benchmark reports marginal coverage, undercoverage, average set size,
+worst class coverage, worst known-group coverage, maximum undercoverage gap,
+selected-slice count, and method runtimes.
 
-The main `DOCP` row uses a sparse fixed-size pool selected from candidate
-generators on the discovery split only. Each generator slice is kept in its
-original form and also split by predicted class before pool selection, so the
-pool can target class-specific undercoverage rather than only global embedding
-regions. By default, DOCP keeps up to eight undercoverage slices with a
-round-robin pass over GMM, K-means, Coverage-Domino, and random-halfspace
-candidates after enrichment scoring and redundancy removal.
-The pool is then repaired on the independent recalibration split; test data are
-not used for method selection.
-
-The main `DOCP` rectifier is BatchGCP over the selected pool. The incremental
-Pool-MVP repair is reported as `DOCP-MVP`.
+Consensus methods discover latent regions on the discovery split, align
+candidate memberships on the independent anchor split, keep only evidence-backed
+consensus groups, and calibrate the selected groups with BatchGCP on the
+rectification split. Test data are used only for final evaluation.
 
 Single-run output:
 
@@ -279,8 +285,9 @@ Multi-seed output:
 summary.csv
 ```
 
-No `all_runs.csv`, per-seed summaries, or slice-quality CSVs are written by
-default.
+Temporary per-seed directories are removed by the runners that create them.
+Final benchmark outputs keep aggregate CSVs, per-task CSVs, runtime CSVs, and
+compact config JSON files.
 
 ## Discovery Seed Stability
 
@@ -291,10 +298,10 @@ rerunning one discovery method with multiple seeds:
 ```bash
 python -m runners.analyze_seed_stability \
   --datasets ham10000 nih mimic_effusion isic rsna_5k \
-  --method coverage_domino \
+  --method kmeans \
   --seeds 1 2 3 4 5 6 7 8 9 10 \
   --split-seed 7 \
-  --outdir results/seed_stability/coverage_domino_fixed_split
+  --outdir results/seed_stability/kmeans_fixed_split
 ```
 
 This diagnostic does not retrain the classifier. It fixes the data split,

@@ -8,7 +8,21 @@ import pandas as pd
 
 
 CARE_CLASSES = ["early_icu_le_6h", "intermediate_icu_6_to_24h", "late_icu_gt_24h"]
-GROUP_COLUMNS = ["race", "gender", "age_group", "arrival_transport", "acuity_group", "race_acuity"]
+GROUP_COLUMNS = [
+    "race",
+    "gender",
+    "age_group",
+    "arrival_transport",
+    "acuity_group",
+    "insurance",
+    "language",
+    "marital_status",
+    "ed_disposition",
+    "race_acuity",
+    "race_gender",
+    "race_age",
+    "gender_age",
+]
 
 
 @dataclass(frozen=True)
@@ -23,6 +37,7 @@ class MimicCareData:
     test_idx: np.ndarray
     known_group: np.ndarray
     groups: pd.DataFrame
+    sensitive_groups: dict[str, np.ndarray]
 
 
 def load_mimic_care_experiment(
@@ -54,20 +69,26 @@ def load_mimic_care_experiment(
         test_idx=splits[4],
         known_group=encoded_group.astype(np.int64),
         groups=group_frame,
+        sensitive_groups={column: group_frame[column].to_numpy() for column in GROUP_COLUMNS},
     )
 
 
 def _load_care_cohort(mimic_iv_root: Path, mimic_ed_root: Path, max_hours: float) -> pd.DataFrame:
     ed = pd.read_csv(
         mimic_ed_root / "ed" / "edstays.csv.gz",
-        usecols=["subject_id", "hadm_id", "stay_id", "intime", "gender", "race", "arrival_transport"],
+        usecols=["subject_id", "hadm_id", "stay_id", "intime", "gender", "race", "arrival_transport", "disposition"],
         parse_dates=["intime"],
     )
+    ed = ed.rename(columns={"disposition": "ed_disposition"})
     triage = pd.read_csv(
         mimic_ed_root / "ed" / "triage.csv.gz",
         usecols=["stay_id", "temperature", "heartrate", "resprate", "o2sat", "sbp", "dbp", "pain", "acuity", "chiefcomplaint"],
     )
     patients = pd.read_csv(mimic_iv_root / "hosp" / "patients.csv.gz", usecols=["subject_id", "anchor_age"])
+    admissions = pd.read_csv(
+        mimic_iv_root / "hosp" / "admissions.csv.gz",
+        usecols=["hadm_id", "insurance", "language", "marital_status"],
+    )
     first_icu = (
         pd.read_csv(mimic_iv_root / "icu" / "icustays.csv.gz", usecols=["hadm_id", "intime"], parse_dates=["intime"])
         .groupby("hadm_id", as_index=False)["intime"]
@@ -76,6 +97,7 @@ def _load_care_cohort(mimic_iv_root: Path, mimic_ed_root: Path, max_hours: float
     )
 
     cohort = ed.merge(first_icu, on="hadm_id", how="inner").merge(triage, on="stay_id", how="left")
+    cohort = cohort.merge(admissions, on="hadm_id", how="left")
     cohort = cohort.merge(patients, on="subject_id", how="left")
     cohort["hours_to_icu"] = (cohort["icu_intime"] - cohort["intime"]).dt.total_seconds() / 3600.0
     cohort = cohort[
@@ -97,6 +119,8 @@ def _add_group_columns(cohort: pd.DataFrame) -> None:
     cohort["race"] = cohort["race"].map(_normalize_race)
     cohort["gender"] = cohort["gender"].fillna("UNKNOWN").astype(str).str.upper()
     cohort["arrival_transport"] = cohort["arrival_transport"].fillna("UNKNOWN").astype(str).str.upper()
+    for column in ["insurance", "language", "marital_status", "ed_disposition"]:
+        cohort[column] = cohort[column].fillna("UNKNOWN").astype(str).str.upper()
     cohort["age_group"] = pd.cut(
         cohort["anchor_age"].fillna(-1),
         bins=[-2, 40, 65, 120],
@@ -108,6 +132,9 @@ def _add_group_columns(cohort: pd.DataFrame) -> None:
         labels=["acuity_1_2", "acuity_3", "acuity_4_5_or_unknown"],
     ).astype(str)
     cohort["race_acuity"] = cohort["race"] + "_" + cohort["acuity_group"]
+    cohort["race_gender"] = cohort["race"] + "_" + cohort["gender"]
+    cohort["race_age"] = cohort["race"] + "_" + cohort["age_group"]
+    cohort["gender_age"] = cohort["gender"] + "_" + cohort["age_group"]
 
 
 def _build_documents(cohort: pd.DataFrame, feature_mode: str) -> pd.Series:

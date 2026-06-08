@@ -454,7 +454,19 @@ def _fit_undercoverage_risk_model(
     seed: int,
 ) -> LogisticRegression:
     rng = np.random.default_rng(seed)
-    bootstrap = rng.choice(len(transformed), size=len(transformed), replace=True)
+    positive = np.flatnonzero(failures)
+    negative = np.flatnonzero(~failures)
+    if len(positive) == 0 or len(negative) == 0:
+        raise ValueError("Undercoverage risk model requires both covered and uncovered examples.")
+    pos_take = max(1, int(round(len(transformed) * len(positive) / len(transformed))))
+    neg_take = max(1, len(transformed) - pos_take)
+    bootstrap = np.concatenate(
+        [
+            rng.choice(positive, size=pos_take, replace=True),
+            rng.choice(negative, size=neg_take, replace=True),
+        ]
+    )
+    rng.shuffle(bootstrap)
     return LogisticRegression(
         C=0.25,
         class_weight="balanced",

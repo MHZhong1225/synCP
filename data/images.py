@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from io import BytesIO
 import re
 import warnings
@@ -32,6 +33,7 @@ class ImageExperimentData:
     mvcal_idx: np.ndarray
     test_idx: np.ndarray
     known_group: np.ndarray | None = None
+    sensitive_groups: dict[str, np.ndarray] | None = None
 
 
 class IndexedDataset(Dataset):
@@ -174,6 +176,7 @@ def load_imagefolder_experiment(
 
 def load_rsna_breast_experiment(
     root: Path,
+    known_group: str = "site",
     seed: int = 7,
     image_size: int = 224,
     max_samples: int | None = None,
@@ -190,9 +193,12 @@ def load_rsna_breast_experiment(
         ]
     )
     metadata = pd.read_csv(root / "train.csv")
-    metadata["path"] = metadata.apply(lambda row: root / "train_images" / str(row["patient_id"]) / f"{row['image_id']}.dcm", axis=1)
+    metadata["path"] = [
+        root / "train_images" / str(patient_id) / f"{image_id}.dcm"
+        for patient_id, image_id in zip(metadata["patient_id"], metadata["image_id"])
+    ]
     metadata = metadata[metadata["path"].map(Path.exists)].copy()
-    metadata = metadata[metadata["path"].map(_dicom_has_pixel_data)].copy()
+    metadata = metadata[metadata["path"].map(_dicom_header_is_readable)].copy()
     if max_samples is not None and len(metadata) > max_samples:
         metadata = _balanced_image_sample(metadata, "cancer", max_samples, seed)
     metadata = metadata.reset_index(drop=True)
@@ -208,7 +214,8 @@ def load_rsna_breast_experiment(
         discovery_fraction=discovery_fraction,
         mvcal_fraction=mvcal_fraction,
     )
-    known_group = _rsna_known_group(metadata)
+    sensitive_groups = _rsna_sensitive_groups(metadata)
+    encoded_group = _encode_group(sensitive_groups[known_group])
     return ImageExperimentData(
         dataset=dataset,
         labels=labels,
@@ -218,7 +225,8 @@ def load_rsna_breast_experiment(
         discovery_idx=discovery_idx,
         mvcal_idx=mvcal_idx,
         test_idx=test_idx,
-        known_group=known_group,
+        known_group=encoded_group,
+        sensitive_groups=sensitive_groups,
     )
 
 
@@ -245,7 +253,11 @@ def load_nih_experiment(
     metadata = pd.read_csv(root / "Data_Entry_2017.csv")
     path_map = {path.name: path for path in root.glob("images*/**/*.png")}
     metadata = metadata[metadata["Image Index"].isin(path_map)].copy()
-    metadata["label"] = metadata["Finding Labels"].str.split("|").apply(lambda labels: int(target in labels))
+    finding_sets = metadata["Finding Labels"].str.split("|").apply(set)
+    metadata = metadata[
+        finding_sets.apply(lambda findings: target in findings or findings == {"No Finding"})
+    ].copy()
+    metadata["label"] = metadata["Finding Labels"].str.split("|").apply(lambda findings: int(target in findings))
     metadata["split"] = "unused"
     train_names = set((root / "train_val_list.txt").read_text(encoding="utf-8").splitlines())
     test_names = set((root / "test_list.txt").read_text(encoding="utf-8").splitlines())
@@ -259,9 +271,8 @@ def load_nih_experiment(
     metadata = metadata.reset_index(drop=True)
     paths = [path_map[name] for name in metadata["Image Index"]]
     labels = metadata["label"].to_numpy(dtype=np.int64)
-    group_values = _nih_group_values(metadata, known_group)
-    _, encoded_groups = np.unique(group_values, return_inverse=True)
-    encoded_groups = encoded_groups.astype(np.int64)
+    sensitive_groups = _nih_sensitive_groups(metadata)
+    encoded_groups = _encode_group(_nih_group_values(metadata, known_group))
 
     dataset = ImageRecordsDataset(paths, labels, transform)
     rng = np.random.default_rng(seed)
@@ -291,6 +302,7 @@ def load_nih_experiment(
         mvcal_idx=split_pool[c:d],
         test_idx=test_idx,
         known_group=encoded_groups,
+        sensitive_groups=sensitive_groups,
     )
 
 
@@ -323,8 +335,8 @@ def load_ham10000_experiment(
     class_to_index = {name: index for index, name in enumerate(class_names)}
     labels = metadata["dx"].map(class_to_index).to_numpy(dtype=np.int64)
     paths = [path_map[image_id] for image_id in metadata["image_id"]]
-    group_values = _ham10000_group_values(metadata, known_group)
-    _, encoded_groups = np.unique(group_values, return_inverse=True)
+    sensitive_groups = _ham10000_sensitive_groups(metadata)
+    encoded_groups = _encode_group(_ham10000_group_values(metadata, known_group))
 
     dataset = ImageRecordsDataset(paths, labels, transform)
     train_idx, calib0_idx, discovery_idx, mvcal_idx, test_idx = _stratified_lesion_splits(
@@ -346,12 +358,22 @@ def load_ham10000_experiment(
         mvcal_idx=mvcal_idx,
         test_idx=test_idx,
         known_group=encoded_groups.astype(np.int64),
+        sensitive_groups=sensitive_groups,
     )
+
+
+
+def _exclude_ham10000_images(metadata: pd.DataFrame, ham_root: Path) -> pd.DataFrame:
+    ham_metadata = ham_root / HAM10000_metadata.csv
+    if not ham_metadata.exists():
+        return metadata
+    ham_ids = pd.read_csv(ham_metadata, usecols=[image_id])[image_id].astype(str)
+    return metadata[~metadata[isic_id].astype(str).isin(set(ham_ids))].copy()
 
 
 def load_isic_experiment(
     root: Path,
-    known_group: str = "source",
+    known_group: str = "anatom_site_general",
     seed: int = 7,
     image_size: int = 224,
     max_samples: int | None = 20000,
@@ -383,8 +405,8 @@ def load_isic_experiment(
     labels = metadata["diagnosis"].map(class_to_index).to_numpy(dtype=np.int64)
     metadata["label_index"] = labels
     metadata["entity_id"] = _isic_entity_ids(metadata)
-    group_values = _isic_group_values(metadata, known_group)
-    _, encoded_groups = np.unique(group_values, return_inverse=True)
+    sensitive_groups = _isic_sensitive_groups(metadata)
+    encoded_groups = _encode_group(_isic_group_values(metadata, known_group))
     splits = _stratified_entity_splits(
         metadata,
         entity_column="entity_id",
@@ -405,6 +427,7 @@ def load_isic_experiment(
         mvcal_idx=splits[3],
         test_idx=splits[4],
         known_group=encoded_groups.astype(np.int64),
+        sensitive_groups=sensitive_groups,
     )
 
 
@@ -445,8 +468,8 @@ def load_mimic_joint_experiment(
         discovery_fraction=discovery_fraction,
         mvcal_fraction=mvcal_fraction,
     )
-    group_values = _mimic_group_values(metadata, known_group)
-    _, encoded_groups = np.unique(group_values, return_inverse=True)
+    sensitive_groups = _mimic_sensitive_groups(metadata)
+    encoded_groups = _encode_group(_mimic_group_values(metadata, known_group))
     return ImageExperimentData(
         dataset=dataset,
         labels=labels,
@@ -457,6 +480,7 @@ def load_mimic_joint_experiment(
         mvcal_idx=mvcal_idx,
         test_idx=test_idx,
         known_group=encoded_groups.astype(np.int64),
+        sensitive_groups=sensitive_groups,
     )
 
 
@@ -482,14 +506,20 @@ def _load_mimic_cxr_records(root: Path, target: str) -> pd.DataFrame:
 
 
 def _load_mimic_study_labels(root: Path, target: str) -> dict[int, int]:
-    labels: dict[int, int] = {}
+    return _load_mimic_all_study_labels(root)[target]
+
+
+@lru_cache(maxsize=2)
+def _load_mimic_all_study_labels(root: Path) -> dict[str, dict[int, int]]:
+    labels = {target: {} for target in MIMIC_TARGET_TERMS}
     with ZipFile(root / "mimic-cxr-reports.zip") as reports:
         for name in reports.namelist():
             if not name.endswith(".txt"):
                 continue
             study_id = int(Path(name).stem.removeprefix("s"))
             report = reports.read(name).decode("utf-8", errors="ignore")
-            labels[study_id] = _mimic_report_label(report, target)
+            for target in labels:
+                labels[target][study_id] = _mimic_report_label(report, target)
     return labels
 
 
@@ -610,6 +640,7 @@ def _mimic_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
         "gender": gender,
         "age": age,
         "race": race,
+        "insurance": metadata["insurance"].fillna("UNKNOWN").astype(str),
         "arrival": arrival,
         "race_age": race + "_" + age,
         "gender_age": gender + "_" + age,
@@ -619,6 +650,13 @@ def _mimic_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
     if group not in values:
         raise ValueError(f"Unknown MIMIC known group: {group}")
     return values[group].to_numpy()
+
+
+def _mimic_sensitive_groups(metadata: pd.DataFrame) -> dict[str, np.ndarray]:
+    return {
+        name: _mimic_group_values(metadata, name)
+        for name in ["gender", "age", "race", "insurance", "arrival", "ed_acuity", "icu_history"]
+    }
 
 
 def _read_dicom_image(path: Path) -> Image.Image:
@@ -644,7 +682,7 @@ def _read_dicom_image(path: Path) -> Image.Image:
     return Image.fromarray(normalized).convert("RGB")
 
 
-def _dicom_has_pixel_data(path: Path) -> bool:
+def _dicom_header_is_readable(path: Path) -> bool:
     try:
         import pydicom
     except ImportError as exc:
@@ -653,10 +691,10 @@ def _dicom_has_pixel_data(path: Path) -> bool:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            dicom = pydicom.dcmread(path)
+            pydicom.dcmread(path, stop_before_pixels=True)
     except Exception:
         return False
-    return hasattr(dicom, "PixelData")
+    return True
 
 
 def _balanced_image_sample(metadata: pd.DataFrame, label_column: str, max_samples: int, seed: int) -> pd.DataFrame:
@@ -705,10 +743,16 @@ def _stratified_patient_splits(
     )
 
 
-def _rsna_known_group(metadata: pd.DataFrame) -> np.ndarray:
-    group_values = metadata["site_id"].astype(str) + "_" + metadata["laterality"].astype(str) + "_" + metadata["view"].astype(str)
-    _, encoded = np.unique(group_values.to_numpy(), return_inverse=True)
-    return encoded.astype(np.int64)
+def _rsna_sensitive_groups(metadata: pd.DataFrame) -> dict[str, np.ndarray]:
+    age = pd.cut(
+        metadata["age"].fillna(-1),
+        bins=[-2, 40, 50, 60, 70, 120],
+        labels=["age_unknown_or_le_40", "age_41_50", "age_51_60", "age_61_70", "age_gt_70"],
+    ).astype(str)
+    return {
+        "age": age.to_numpy(),
+        "site": metadata["site_id"].fillna("UNKNOWN").astype(str).to_numpy(),
+    }
 
 
 def _stratified_lesion_splits(
@@ -795,9 +839,18 @@ def _isic_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
         "confirmation": metadata["diagnosis_confirm_type"].fillna("UNKNOWN").astype(str),
         "skin_type": metadata["fitzpatrick_skin_type"].fillna("UNKNOWN").astype(str),
     }
+    values["age_approx"] = values["age_group"]
+    values["anatom_site_general"] = values["anatom_site"]
     if group not in values:
         raise ValueError(f"Unknown ISIC known group: {group}")
     return values[group].to_numpy()
+
+
+def _isic_sensitive_groups(metadata: pd.DataFrame) -> dict[str, np.ndarray]:
+    return {
+        name: _isic_group_values(metadata, name)
+        for name in ["anatom_site_general", "age_approx", "sex"]
+    }
 
 
 def _balanced_metadata_sample(metadata: pd.DataFrame, max_samples: int, seed: int) -> pd.DataFrame:
@@ -839,6 +892,10 @@ def _nih_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
     raise ValueError(f"Unknown NIH known group: {group}")
 
 
+def _nih_sensitive_groups(metadata: pd.DataFrame) -> dict[str, np.ndarray]:
+    return {name: _nih_group_values(metadata, name) for name in ["gender", "age"]}
+
+
 def _ham10000_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
     if group == "sex":
         return metadata["sex"].fillna("unknown").astype(str).to_numpy()
@@ -850,6 +907,14 @@ def _ham10000_group_values(metadata: pd.DataFrame, group: str) -> np.ndarray:
         age = metadata["age"].fillna(-1).clip(-1, 100)
         return pd.cut(age, bins=[-2, 30, 50, 70, 120], labels=["age_unknown_or_le_30", "age_31_50", "age_51_70", "age_gt_70"]).astype(str).to_numpy()
     raise ValueError(f"Unknown HAM10000 known group: {group}")
+
+
+def _ham10000_sensitive_groups(metadata: pd.DataFrame) -> dict[str, np.ndarray]:
+    return {name: _ham10000_group_values(metadata, name) for name in ["sex", "age", "localization"]}
+
+
+def _encode_group(values: np.ndarray) -> np.ndarray:
+    return np.unique(values, return_inverse=True)[1].astype(np.int64)
 
 
 class ImageClassifier(nn.Module):
@@ -886,8 +951,14 @@ def train_image_classifier(
     checkpoint: Path | None = None,
 ) -> ImageClassifier:
     torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = device.startswith("cuda")
     model = ImageClassifier(num_classes=num_classes, backbone=backbone, pretrained=pretrained, checkpoint=checkpoint).to(device)
-    loader = DataLoader(Subset(dataset, train_idx.tolist()), batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    loader = DataLoader(
+        Subset(dataset, train_idx.tolist()),
+        batch_size=batch_size,
+        shuffle=True,
+        **_loader_kwargs(device),
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn = nn.CrossEntropyLoss()
     model.train()
@@ -910,21 +981,26 @@ def predict_image_dataset(
     batch_size: int = 128,
 ) -> tuple[np.ndarray, np.ndarray]:
     indexed = IndexedDataset(dataset)
-    loader = DataLoader(indexed, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    loader = DataLoader(indexed, batch_size=batch_size, shuffle=False, **_loader_kwargs(device))
     model.eval()
-    probs_by_index: dict[int, np.ndarray] = {}
-    emb_by_index: dict[int, np.ndarray] = {}
+    prob_batches: list[np.ndarray] = []
+    embedding_batches: list[np.ndarray] = []
     for xb, _, indices in progress(loader, desc="extract features", total=len(loader), leave=False):
         xb = xb.to(device, non_blocking=True)
         logits = model(xb)
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
-        embeddings = model.embed(xb).cpu().numpy()
-        for idx, prob, emb in zip(indices.numpy().tolist(), probs, embeddings):
-            probs_by_index[idx] = prob
-            emb_by_index[idx] = emb
-    probs = np.stack([probs_by_index[i] for i in range(len(dataset))])
-    embeddings = np.stack([emb_by_index[i] for i in range(len(dataset))]).astype(np.float32)
-    return probs, embeddings
+        prob_batches.append(torch.softmax(logits, dim=1).cpu().numpy())
+        embedding_batches.append(model.embed(xb).cpu().numpy())
+    return np.concatenate(prob_batches, axis=0), np.concatenate(embedding_batches, axis=0).astype(np.float32)
+
+
+def _loader_kwargs(device: str) -> dict[str, object]:
+    workers = 20
+    return {
+        "num_workers": workers,
+        "pin_memory": device.startswith("cuda"),
+        "persistent_workers": workers > 0,
+        "prefetch_factor": 4,
+    }
 
 
 def _build_backbone(backbone: str, pretrained: bool, checkpoint: Path | None) -> tuple[nn.Module, int]:

@@ -13,10 +13,20 @@ from core.conformal import classwise_quantiles, conformal_quantile, covered, gro
 from core.metrics import evaluate_classwise_model, evaluate_classifier, evaluate_groupwise_model, evaluate_threshold_model
 from core.progress import progress
 from core.rectification import fit_batch_gcp, fit_pool_mvp, fit_slice_quantile, fit_standard
-from data.images import load_ham10000_experiment, load_imagefolder_experiment, load_mimic_joint_experiment, load_nih_experiment, load_rsna_breast_experiment, predict_image_dataset, train_image_classifier
+from data.images import load_ham10000_experiment, load_imagefolder_experiment, load_isic_experiment, load_mimic_joint_experiment, load_nih_experiment, load_rsna_breast_experiment, predict_image_dataset, train_image_classifier
 from reports.diagnostics import slice_repair_diagnostics
 from reports.output import print_results, write_results
-from slices.discovery import GroupFunction, class_conditional_groups, discover_coverage_domino, discover_error_domino, discover_gmm_unaware, discover_kmeans, discover_random_halfspace, select_group_pool
+from slices.discovery import (
+    GroupFunction,
+    class_conditional_groups,
+    discover_coverage_domino,
+    discover_error_domino,
+    discover_gmm_unaware,
+    discover_kmeans,
+    discover_random_halfspace,
+    discover_undercoverage_risk,
+    select_group_pool,
+)
 
 
 DISCOVERY_METHODS = ("random_halfspace", "coverage_domino", "error_domino", "gmm_unaware", "kmeans")
@@ -57,6 +67,13 @@ DATASET_PRESETS = {
         "known_group": "sex",
         "cache_file": Path("results/ham10000/features.npz"),
     },
+    "isic": {
+        "dataset_type": "isic",
+        "dataset_root": Path("../dataset/ISIC"),
+        "known_group": "anatom_site_general",
+        "max_samples": 20000,
+        "cache_file": Path("results/isic/features.npz"),
+    },
     "mimic_effusion": {
         "dataset_type": "mimic",
         "dataset_root": Path("../dataset/MIMIC-CXR"),
@@ -70,6 +87,7 @@ DATASET_PRESETS = {
     "rsna_5k": {
         "dataset_type": "rsna_5k",
         "dataset_root": Path("../dataset/rsna-breast"),
+        "known_group": "site",
         "max_samples": 5000,
         "cache_file": Path("results/rsna_5k/features.npz"),
     },
@@ -90,13 +108,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hyperparams", type=Path, default=None)
     parser.add_argument("--hyperparams-key", default=None)
     parser.add_argument("--dataset-root", type=Path, default=Path("../dataset/bracs"))
-    parser.add_argument("--dataset-type", choices=["imagefolder", "nih", "ham10000", "mimic", "rsna_5k"], default="imagefolder")
+    parser.add_argument("--dataset-type", choices=["imagefolder", "nih", "ham10000", "isic", "mimic", "rsna_5k"], default="imagefolder")
     parser.add_argument("--split-mode", choices=["official_test", "random_all"], default="official_test")
     parser.add_argument("--nih-target", default="Effusion")
     parser.add_argument("--mimic-target", choices=["Pleural Effusion", "Pneumonia", "Pneumothorax", "Pulmonary Edema", "Cardiomegaly"], default="Pleural Effusion")
     parser.add_argument("--mimic-iv-root", type=Path, default=Path("../dataset/mimic-iv-3.1"), help=argparse.SUPPRESS)
     parser.add_argument("--mimic-ed-root", type=Path, default=Path("../dataset/mimic-iv-ed-2.2"), help=argparse.SUPPRESS)
-    parser.add_argument("--known-group", choices=["gender", "age", "view", "gender_age", "gender_view", "sex", "localization", "dx_type", "race", "arrival", "race_age", "ed_acuity", "icu_history"], default="gender")
+    parser.add_argument("--known-group", choices=["gender", "age", "view", "gender_age", "gender_view", "sex", "localization", "dx_type", "source", "age_group", "age_approx", "anatom_site", "anatom_site_general", "confirmation", "skin_type", "site", "race", "insurance", "arrival", "race_age", "ed_acuity", "icu_history"], default="gender")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--outdir", type=Path, default=Path("results/bracs"))
     parser.add_argument("--device", default="cuda")
@@ -313,11 +331,19 @@ def load_experiment_data(args: argparse.Namespace):
     if args.dataset_type == "rsna_5k":
         return load_rsna_breast_experiment(
             args.dataset_root,
+            known_group=args.known_group,
             seed=args.seed,
             max_samples=args.max_samples,
         )
     if args.dataset_type == "ham10000":
         return load_ham10000_experiment(
+            args.dataset_root,
+            known_group=args.known_group,
+            seed=args.seed,
+            max_samples=args.max_samples,
+        )
+    if args.dataset_type == "isic":
+        return load_isic_experiment(
             args.dataset_root,
             known_group=args.known_group,
             seed=args.seed,
@@ -430,6 +456,15 @@ def discover_slice_method(method: str, args: argparse.Namespace, inputs: Discove
             inputs.coverage_failures,
             alpha=args.alpha,
             num_directions=args.components,
+            **common,
+        )
+        return groups
+    if method == "undercoverage_risk":
+        groups, _ = discover_undercoverage_risk(
+            inputs.embeddings,
+            inputs.uncertainty,
+            inputs.coverage_failures,
+            alpha=args.alpha,
             **common,
         )
         return groups
@@ -597,7 +632,7 @@ def _load_feature_cache(path: Path, num_classes: int, backbone: str) -> tuple[np
     if probs.ndim != 2 or probs.shape[1] != num_classes:
         raise ValueError(
             f"Cached probabilities have {probs.shape[1] if probs.ndim == 2 else 'invalid'} classes, "
-            f"but this dataset has {num_classes}. Use a task-specific cache or rerun without --reuse-cache."
+            f"but this dataset has {num_classes}. Use a task-specific --cache-file or delete the incompatible cache."
         )
     if "num_classes" in cached and int(cached["num_classes"]) != num_classes:
         raise ValueError("Cached feature file was created for a different number of classes.")
@@ -605,7 +640,7 @@ def _load_feature_cache(path: Path, num_classes: int, backbone: str) -> tuple[np
         if str(cached["backbone"]) != backbone:
             raise ValueError("Cached feature file was created for a different backbone.")
     elif backbone != "resnet18":
-        raise ValueError("Cached feature file has no backbone metadata. Rerun without --reuse-cache for this backbone.")
+        raise ValueError("Cached feature file has no backbone metadata. Use a task-specific --cache-file or delete the cache.")
     return probs, embeddings
 
 
