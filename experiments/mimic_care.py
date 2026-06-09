@@ -66,7 +66,9 @@ def main() -> None:
 
 
 def _load_or_fit_features(args: argparse.Namespace, data: MimicCareData) -> tuple[np.ndarray, np.ndarray]:
-    path = args.outdir / "features.npz"
+    cache_name = "mimic_care.npz" if args.feature_mode == "text_triage" else f"mimic_care_{args.feature_mode}.npz"
+    path = Path("results/npz") / cache_name
+    path.parent.mkdir(parents=True, exist_ok=True)
     if args.cache and path.exists():
         cached = np.load(path)
         if "feature_mode" not in cached or str(cached["feature_mode"]) != args.feature_mode:

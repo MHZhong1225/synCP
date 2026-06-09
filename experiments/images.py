@@ -52,7 +52,7 @@ FIXED_HYPERPARAM_FIELDS = (
 DATASET_PRESETS = {
     "bracs": {
         "dataset_root": Path("../dataset/bracs"),
-        "cache_file": Path("results/bracs/features.npz"),
+        "cache_file": Path("results/npz/bracs.npz"),
     },
     "nih": {
         "dataset_type": "nih",
@@ -60,20 +60,20 @@ DATASET_PRESETS = {
         "nih_target": "Effusion",
         "known_group": "gender",
         "max_samples": 5000,
-        "cache_file": Path("results/nih/features.npz"),
+        "cache_file": Path("results/npz/nih.npz"),
     },
     "ham10000": {
         "dataset_type": "ham10000",
         "dataset_root": Path("../dataset/HAM10000"),
         "known_group": "sex",
-        "cache_file": Path("results/ham10000/features.npz"),
+        "cache_file": Path("results/npz/ham10000.npz"),
     },
     "isic": {
         "dataset_type": "isic",
         "dataset_root": Path("../dataset/ISIC"),
         "known_group": "anatom_site_general",
         "max_samples": 20000,
-        "cache_file": Path("results/isic/features.npz"),
+        "cache_file": Path("results/npz/isic.npz"),
     },
     "mimic_effusion": {
         "dataset_type": "mimic",
@@ -83,14 +83,14 @@ DATASET_PRESETS = {
         "mimic_target": "Pleural Effusion",
         "known_group": "race",
         "max_samples": 5000,
-        "cache_file": Path("results/mimic_effusion/features.npz"),
+        "cache_file": Path("results/npz/mimic_effusion.npz"),
     },
     "rsna_5k": {
         "dataset_type": "rsna_5k",
         "dataset_root": Path("../dataset/rsna-breast"),
         "known_group": "site",
         "max_samples": 5000,
-        "cache_file": Path("results/rsna_5k/features.npz"),
+        "cache_file": Path("results/npz/rsna_5k.npz"),
     },
 }
 
@@ -365,7 +365,7 @@ def load_experiment_data(args: argparse.Namespace):
 
 
 def load_or_create_features(args: argparse.Namespace, data, device: str) -> tuple[np.ndarray, np.ndarray]:
-    cache_file = args.cache_file or (args.outdir / "features.npz")
+    cache_file = args.cache_file or (Path("results/npz") / f"{args.outdir.name}.npz")
     if args.cache and cache_file.exists():
         return _load_feature_cache(cache_file, len(data.class_names), args.backbone)
 

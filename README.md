@@ -123,10 +123,7 @@ RSNA Breast Cancer Detection:
 python -m experiments.images --dataset-type rsna_5k --dataset-root ../dataset/rsna-breast --outdir results/rsna_5k --device cuda:1 --max-samples 5000
 ```
 
-Image experiments write `summary.csv`. They also keep `features.npz` as a cache
-so repeated runs can use `--cache`. Cache files are checked against the
-current number of classes, so a binary cache is not reused for a multi-class
-task by accident.
+Image experiments write result files such as `summary.csv` under their experiment directories. Feature caches are stored separately in `results/npz/`, so cached model outputs do not mix with experiment tables. Repeated runs can use `--cache`. Cache files are checked against the current number of classes, so a binary cache is not reused for a multi-class task by accident.
 
 The image score is selected automatically: binary tasks use inverse probability
 and multi-class tasks use APS prediction-set scores.
@@ -139,8 +136,7 @@ Image backbones can be selected with `--backbone`. The built-in choices are
 python -m experiments.images --preset bracs --outdir results/bracs_chexnet --backbone chexnet --backbone-checkpoint checkpoints/chexnet.pth --device cuda
 ```
 
-Feature caches are backbone-specific. Rerun without `--cache` when
-switching backbones.
+Feature caches in `results/npz/` are backbone-specific. Rerun without `--cache` when switching backbones.
 
 ## Method Groups
 

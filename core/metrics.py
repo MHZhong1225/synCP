@@ -47,9 +47,8 @@ def evaluate_threshold_model(
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     if not sensitive_groups:
-        row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
-        row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
-    _add_sensitive_group_metrics(row, sensitive_groups, is_covered)
+        _add_known_group_metrics(row, known_group, is_covered, alpha)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     worst_values = [
         row["worst_shared_discovered_slice_coverage"],
@@ -205,9 +204,8 @@ def evaluate_classwise_model(
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     if not sensitive_groups:
-        row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
-        row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
-    _add_sensitive_group_metrics(row, sensitive_groups, is_covered)
+        _add_known_group_metrics(row, known_group, is_covered, alpha)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
         float(row[key])
@@ -251,9 +249,8 @@ def evaluate_groupwise_model(
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     if not sensitive_groups:
-        row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
-        row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
-    _add_sensitive_group_metrics(row, sensitive_groups, is_covered)
+        _add_known_group_metrics(row, known_group, is_covered, alpha)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
         float(row[key])
@@ -376,29 +373,91 @@ def _add_sensitive_group_metrics(
     row: dict[str, float | str | int],
     sensitive_groups: dict[str, np.ndarray] | None,
     covered_mask: np.ndarray,
+    alpha: float,
 ) -> None:
     if not sensitive_groups:
         return
-    worst_values = []
+    all_coverages = []
+    attribute_macro_coverages = []
+    attribute_undercoverage_gaps = []
+    attribute_absolute_gaps = []
     for attribute, labels in sensitive_groups.items():
         attribute_token = _column_token(attribute)
-        row.update(_label_coverages(f"known_group_coverage_{attribute_token}_group", labels, covered_mask))
-        worst = _worst_label_coverage(labels, covered_mask)
-        row[f"worst_known_group_coverage_{attribute_token}"] = worst
-        if not np.isnan(worst):
-            worst_values.append(worst)
-    row["worst_known_group_coverage"] = float(min(worst_values)) if worst_values else float("nan")
+        coverages, sizes = _label_coverage_and_sizes(labels, covered_mask)
+        row.update({f"known_group_coverage_{attribute_token}_group_{group}": coverage for group, coverage in coverages.items()})
+        row.update({f"known_group_size_{attribute_token}_group_{group}": size for group, size in sizes.items()})
+        values = list(coverages.values())
+        metrics = _coverage_fairness_metrics(values, prefix=f"known_group_{attribute_token}", target=1.0 - alpha)
+        row.update(metrics)
+        if values:
+            attribute_macro_coverages.append(metrics[f"known_group_{attribute_token}_macro_coverage"])
+            attribute_undercoverage_gaps.append(metrics[f"known_group_{attribute_token}_mean_undercoverage_gap"])
+            attribute_absolute_gaps.append(metrics[f"known_group_{attribute_token}_mean_absolute_coverage_gap"])
+        all_coverages.extend(values)
+    row.update(_coverage_fairness_metrics(all_coverages, prefix="known_group", target=1.0 - alpha))
+    row["known_group_attribute_macro_coverage"] = _safe_mean(attribute_macro_coverages)
+    row["known_group_attribute_mean_undercoverage_gap"] = _safe_mean(attribute_undercoverage_gaps)
+    row["known_group_attribute_mean_absolute_coverage_gap"] = _safe_mean(attribute_absolute_gaps)
+
+
+def _add_known_group_metrics(
+    row: dict[str, float | str | int],
+    labels: np.ndarray | None,
+    covered_mask: np.ndarray,
+    alpha: float,
+) -> None:
+    coverages, sizes = _label_coverage_and_sizes(labels, covered_mask)
+    row.update({f"known_group_coverage_group_{group}": coverage for group, coverage in coverages.items()})
+    row.update({f"known_group_size_group_{group}": size for group, size in sizes.items()})
+    row.update(_coverage_fairness_metrics(list(coverages.values()), prefix="known_group", target=1.0 - alpha))
 
 
 def _label_coverages(prefix: str, labels: np.ndarray | None, covered_mask: np.ndarray, min_size: int = 20) -> dict[str, float]:
+    coverages, _ = _label_coverage_and_sizes(labels, covered_mask, min_size)
+    return {f"{prefix}_{group}": coverage for group, coverage in coverages.items()}
+
+
+def _label_coverage_and_sizes(
+    labels: np.ndarray | None,
+    covered_mask: np.ndarray,
+    min_size: int = 20,
+) -> tuple[dict[str, float], dict[str, int]]:
     if labels is None:
-        return {}
-    values = {}
+        return {}, {}
+    coverages = {}
+    sizes = {}
     for label in np.unique(labels):
         mask = labels == label
-        if mask.sum() >= min_size:
-            values[f"{prefix}_{_column_token(label)}"] = float(covered_mask[mask].mean())
-    return values
+        size = int(mask.sum())
+        if size >= min_size:
+            token = _column_token(label)
+            coverages[token] = float(covered_mask[mask].mean())
+            sizes[token] = size
+    return coverages, sizes
+
+
+def _coverage_fairness_metrics(values: list[float], prefix: str, target: float) -> dict[str, float]:
+    finite = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
+    if finite.size == 0:
+        return {
+            f"worst_{prefix}_coverage": float("nan"),
+            f"{prefix}_macro_coverage": float("nan"),
+            f"{prefix}_mean_undercoverage_gap": float("nan"),
+            f"{prefix}_mean_absolute_coverage_gap": float("nan"),
+            f"{prefix}_coverage_disparity": float("nan"),
+        }
+    return {
+        f"worst_{prefix}_coverage": float(finite.min()),
+        f"{prefix}_macro_coverage": float(finite.mean()),
+        f"{prefix}_mean_undercoverage_gap": float(np.maximum(0.0, target - finite).mean()),
+        f"{prefix}_mean_absolute_coverage_gap": float(np.abs(finite - target).mean()),
+        f"{prefix}_coverage_disparity": float(finite.max() - finite.min()),
+    }
+
+
+def _safe_mean(values: list[float]) -> float:
+    finite = [value for value in values if np.isfinite(value)]
+    return float(np.mean(finite)) if finite else float("nan")
 
 
 def _column_token(value: object) -> str:
