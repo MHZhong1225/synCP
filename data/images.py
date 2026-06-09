@@ -363,12 +363,13 @@ def load_ham10000_experiment(
 
 
 
+
 def _exclude_ham10000_images(metadata: pd.DataFrame, ham_root: Path) -> pd.DataFrame:
-    ham_metadata = ham_root / HAM10000_metadata.csv
+    ham_metadata = ham_root / "HAM10000_metadata.csv"
     if not ham_metadata.exists():
         return metadata
-    ham_ids = pd.read_csv(ham_metadata, usecols=[image_id])[image_id].astype(str)
-    return metadata[~metadata[isic_id].astype(str).isin(set(ham_ids))].copy()
+    ham_ids = pd.read_csv(ham_metadata, usecols=["image_id"])["image_id"].astype(str)
+    return metadata[~metadata["isic_id"].astype(str).isin(set(ham_ids))].copy()
 
 
 def load_isic_experiment(
@@ -395,6 +396,7 @@ def load_isic_experiment(
         raise FileNotFoundError(f"Expected ISIC image store: {image_store}")
     metadata = metadata[metadata["image_type"].eq("dermoscopic") & metadata["diagnosis"].notna()].copy()
     common_diagnoses = metadata["diagnosis"].value_counts()
+    metadata = _exclude_ham10000_images(metadata, root.parent / "HAM10000")
     metadata = metadata[metadata["diagnosis"].isin(common_diagnoses[common_diagnoses >= 300].index)].copy()
     if max_samples is not None and len(metadata) > max_samples:
         metadata = _balanced_image_sample(metadata, "diagnosis", max_samples, seed)

@@ -23,13 +23,14 @@ from slices.discovery import (
     discover_error_domino,
     discover_gmm_unaware,
     discover_kmeans,
+    discover_cp_score_kmeans,
     discover_random_halfspace,
     discover_undercoverage_risk,
     select_group_pool,
 )
 
 
-DISCOVERY_METHODS = ("random_halfspace", "coverage_domino", "error_domino", "gmm_unaware", "kmeans")
+DISCOVERY_METHODS = ("random_halfspace", "coverage_domino", "error_domino", "gmm_unaware", "kmeans", "cp_score_kmeans")
 POOL_METHODS = ("gmm_unaware", "kmeans", "coverage_domino", "random_halfspace")
 RECTIFIERS = ("standard", "pool_mvp", "slice_quantile", "batch_gcp")
 POOL_STEP = 0.02
@@ -100,6 +101,7 @@ class DiscoveryInputs:
     uncertainty: np.ndarray
     coverage_failures: np.ndarray
     classification_errors: np.ndarray
+    cp_scores: np.ndarray | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -424,6 +426,17 @@ def discover_slice_method(method: str, args: argparse.Namespace, inputs: Discove
         groups, _ = discover_kmeans(
             inputs.embeddings,
             inputs.uncertainty,
+            inputs.coverage_failures,
+            alpha=args.alpha,
+            n_clusters=args.components,
+            **common,
+        )
+        return groups
+    if method == "cp_score_kmeans":
+        scores = inputs.cp_scores if inputs.cp_scores is not None else inputs.uncertainty
+        groups, _ = discover_cp_score_kmeans(
+            inputs.embeddings,
+            scores,
             inputs.coverage_failures,
             alpha=args.alpha,
             n_clusters=args.components,

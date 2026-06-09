@@ -1,16 +1,15 @@
 # SCOPE
 
 SCOPE studies hidden undercoverage in medical prediction sets. The current
-implementation uses repeated latent slice discovery, consensus aggregation on
-an independent anchor split, and evidence-gated BatchGCP calibration. The main
-reported methods are `Consensus-KMeans` and
-`Consensus-UndercoverageRisk`.
+implementation uses CP-score-aware latent slice discovery, consensus aggregation
+on an independent anchor split, and evidence-gated BatchGCP calibration. The
+main reported method is `Consensus-CPScore`.
 
 ## Project Layout
 
 ```text
-core/          conformal scores, metrics, and rectification
-slices/        candidate slice discovery and coverage-driven pool selection
+core/          conformal scores, metrics, consensus aggregation, and rectification
+slices/        candidate latent-slice discovery
 data/          synthetic and image dataset loaders
 experiments/   synthetic and image experiment entry points
 reports/       result formatting and report helpers
@@ -106,15 +105,17 @@ The local release contains 81,722 metadata rows. The experiment keeps the
 at least 300 images: acrochordon, actinic keratosis, basal cell carcinoma,
 dermatofibroma, lichenoid keratosis, melanoma, nevus, pigmented benign
 keratosis, seborrheic keratosis, solar lentigo, squamous cell carcinoma, and
-vascular lesion. These classes contain 52,402 eligible images; class-aware
-sampling limits the primary experiment to 20,000.
+vascular lesion. These diagnoses are selected before removing HAM10000 overlap. The default ISIC
+preprocessing then removes every image whose `isic_id` appears in the local
+HAM10000 metadata, so ISIC and HAM10000 are disjoint in main experiments.
+Class-aware sampling limits the primary ISIC experiment to 20,000 images.
 
 Images are read from `image_256sq.hdf5`, resized to 224 x 224, and normalized
 with ImageNet statistics. Splits are stratified at the patient level when a
 patient ID exists, otherwise at the lesion level, and finally at the image
 level. The train/calibration/discovery/rectification/test fractions are
-50/15/15/10/10. The default known group is the contributing source, enabling
-evaluation of cross-source undercoverage.
+50/15/15/10/10. The default known group is `anatom_site_general`, and evaluation also tracks
+available sensitive attributes such as sex and approximate age.
 
 RSNA Breast Cancer Detection:
 
@@ -151,17 +152,18 @@ Classwise CP
 Known-group CP
 ```
 
-Main SCOPE methods:
+Main SCOPE method:
 
 ```text
-Consensus-KMeans
-Consensus-UndercoverageRisk
+Consensus-CPScore
 ```
 
-Both methods keep cached model predictions fixed, discover candidate latent
-regions on the discovery split, aggregate repeated discoveries on the
-independent anchor/rectification split, and apply BatchGCP without using test
-labels for method selection.
+`Consensus-CPScore` keeps cached model predictions fixed, proposes latent
+regions using embeddings augmented by CP score structure, aggregates repeated
+discoveries on the independent anchor/rectification split, and applies BatchGCP
+without using test labels for method selection. The consensus aggregation core
+lives in `core/consensus.py`; CP-score-aware candidate discovery lives in
+`slices/discovery.py`.
 
 ## Multi-Seed Image Runs
 
@@ -194,9 +196,8 @@ Run BRACS, 14 NIH one-vs-rest tasks, ISIC, HAM10000, RSNA, and MIMIC Care:
 conda run -n ucp python -m runners.run_final_consensus_benchmark
 ```
 
-The final benchmark compares Standard CP, Classwise CP, Known-group CP,
-Consensus-KMeans, and Consensus-UndercoverageRisk. K-means uses five discovery
-seeds by default; Undercoverage-Risk uses ten seeds by default.
+The final benchmark compares Standard CP, Classwise CP, Known-group CP, and
+Consensus-CPScore. Consensus-CPScore uses ten discovery seeds by default.
 
 Method runtimes exclude cached feature extraction and classifier training.
 They include discovery, consensus aggregation, calibration, and evaluation.
@@ -228,9 +229,9 @@ conda run -n ucp python -m runners.ablate_consensus_discovery \
   --nih-targets Effusion
 ```
 
-This compares Coverage-Domino, direct Undercoverage-Risk discovery, K-means,
-and Random-Halfspace while keeping consensus aggregation and rectification
-fixed. Results are written to `results/consensus_discovery_ablation/`.
+This compares CP-Score-KMeans, Coverage-Domino, direct Undercoverage-Risk,
+K-means, and Random-Halfspace while keeping consensus aggregation and
+rectification fixed. Results are written to `results/consensus_discovery_ablation/`.
 
 Seed-count ablation:
 
@@ -239,9 +240,8 @@ conda run -n ucp python -m runners.ablate_consensus_seed_count \
   --tasks bracs nih_all isic ham10000 rsna_5k mimic_care
 ```
 
-This compares how many discovery seeds are needed for K-means and
-Undercoverage-Risk. Results are written to
-`results/consensus_seed_count_ablation/`.
+This compares how many discovery seeds are needed for Consensus-CPScore.
+Results are written to `results/consensus_seed_count_ablation/`.
 
 ## Runner Reference
 
@@ -256,7 +256,7 @@ The maintained files in `runners/` are:
 | `ablate_consensus_discovery.py` | Compares discovery sources under the same consensus and BatchGCP pipeline. |
 | `ablate_consensus_seed_count.py` | Compares one to twenty discovery seeds for the final discovery sources. |
 | `analyze_seed_stability.py` | Diagnostic for discovery instability with fixed cached features and splits. |
-| `benchmark_complex_subgroups.py` | Controlled stress test with synthetic hidden groups in real embedding spaces. |
+| `benchmark_complex_subgroups.py` | Controlled stress test for Consensus-CPScore with synthetic hidden groups in real embedding spaces. |
 | `benchmark_tasks.py` | Shared task loading and result-column helpers; not a command-line experiment. |
 
 ## Output
@@ -287,7 +287,7 @@ summary.csv
 
 Temporary per-seed directories are removed by the runners that create them.
 Final benchmark outputs keep aggregate CSVs, per-task CSVs, runtime CSVs, and
-compact config JSON files.
+compact config JSON files. The exploratory `variants/` package has been removed; maintained method code now lives in `core/`, `slices/`, and `runners/`.
 
 ## Discovery Seed Stability
 
@@ -317,120 +317,6 @@ rectification split. It reports:
 The fixed-split experiment is intentionally separate from full multi-seed
 training experiments. It measures discovery-algorithm instability rather than
 mixing classifier, sampling, calibration, and discovery uncertainty.
-
-## Isolated Variant 1: EE-Style Slice Aggregation
-
-The EE-style variant aggregates repeated Coverage-aware discovery runs without
-modifying the main DOCP implementation:
-
-```bash
-python -m variants.ee_style.run \
-  --datasets ham10000 nih mimic_effusion isic rsna_5k \
-  --seeds 1 2 3 4 5 6 7 8 9 10 \
-  --split-seed 7 \
-  --jaccard-threshold 0.5 \
-  --frequency-threshold 0.5 \
-  --outdir results/variants/ee_style
-```
-
-Candidate slices are matched by membership Jaccard on the independent
-rectification anchor features. `EE-Frequency` ranks candidates by repeated
-selection frequency. `EE-Score` additionally uses the median discovery
-undercoverage gap and slice support. Both variants use BatchGCP after
-aggregation and are compared against Standard CP, Classwise CP, Known-group CP,
-and the original DOCP pool.
-
-The main result uses a pre-specified majority-frequency threshold of `0.5`.
-Threshold sensitivity experiments should be written to separate result
-directories rather than replacing the main result.
-
-## Isolated Variant 2: r-value-style Rank Stability
-
-The rank-stability variant ranks Coverage-aware slices within each discovery
-run by positive undercoverage gap times square-root support:
-
-```bash
-python -m variants.rank_stability.run \
-  --datasets ham10000 nih mimic_effusion isic rsna_5k \
-  --seeds 1 2 3 4 5 6 7 8 9 10 \
-  --split-seed 7 \
-  --top-k 3 \
-  --jaccard-threshold 0.5 \
-  --r-value-threshold 0.5 \
-  --borda-threshold 0.5 \
-  --outdir results/variants/rank_stability
-```
-
-`Rank-rValue` retains slices that repeatedly appear among the top problematic
-slices. `Rank-Borda` aggregates normalized ranks and penalizes unmatched runs
-with the worst rank. Both methods use anchor-set Jaccard matching and BatchGCP
-rectification, without modifying the original DOCP implementation.
-
-The pre-specified main result uses `top-k=3`. Parameter sensitivity runs must
-use separate output directories; for example:
-
-```bash
-python -m variants.rank_stability.run \
-  --datasets rsna_5k \
-  --top-k 5 \
-  --outdir results/variants/rank_stability_rsna_top5
-```
-
-## Isolated Variant 3: Empirical Bayes Latent Undercoverage
-
-The empirical-Bayes variant aligns repeated Coverage-aware discoveries on an
-anchor set, estimates a latent signed undercoverage gap, and selects slices by
-posterior probability:
-
-```bash
-python -m variants.empirical_bayes.run \
-  --datasets ham10000 nih mimic_effusion isic rsna_5k \
-  --seeds 1 2 3 4 5 6 7 8 9 10 \
-  --split-seed 7 \
-  --jaccard-threshold 0.5 \
-  --posterior-threshold 0.9 \
-  --prior-source all_candidates \
-  --outdir results/variants/empirical_bayes
-```
-
-The main implementation estimates the empirical prior from all support-valid
-pre-filter Coverage-aware GMM candidates. Estimating the prior only from slices
-that already passed the positive undercoverage-gap gate causes severe
-selection-induced overconfidence and is retained only as a sensitivity result.
-
-Conservative prior sensitivity:
-
-```bash
-python -m variants.empirical_bayes.run \
-  --prior-source zero \
-  --outdir results/variants/empirical_bayes_zero_prior
-```
-
-## Isolated Variant 4: Consensus Latent Slice Discovery
-
-The consensus variant clusters Coverage-Domino slices from repeated seeds in
-anchor-membership space and constructs new latent consensus groups:
-
-```bash
-python -m variants.consensus_latent.run \
-  --datasets ham10000 nih mimic_effusion isic rsna_5k \
-  --seeds 1 2 3 4 5 6 7 8 9 10 \
-  --split-seed 7 \
-  --similarity-threshold 0.3 \
-  --member-threshold 0.5 \
-  --min-within-stability 0.3 \
-  --posterior-threshold 0.5 \
-  --outdir results/variants/consensus_latent
-```
-
-Candidate nodes are clustered using average-linkage anchor Jaccard distance.
-Within each latent cluster, candidates from the same seed cast one union vote,
-then votes are averaged across represented seeds. `Consensus-Hard` applies
-BatchGCP to majority-vote consensus groups. `Consensus-Soft` interpolates the
-global and group thresholds using continuous consensus membership.
-
-The current isolated experiment intentionally uses only Coverage-Domino.
-Cross-method diversity is not evaluated and contributes no reliability bonus.
 
 ## Complex Hidden Subgroup Benchmark
 

@@ -60,6 +60,26 @@ class KMeansGroup:
 
 
 @dataclass
+class CPScoreKMeansGroup:
+    name: str
+    embedding_scaler: StandardScaler
+    score_scaler: StandardScaler
+    kmeans: KMeans
+    cluster: int
+    score_weight: float
+
+    def membership(self, z: np.ndarray, observed_scores: np.ndarray | None = None) -> np.ndarray:
+        features = _cp_augmented_features(
+            z,
+            observed_scores,
+            self.embedding_scaler,
+            self.score_scaler,
+            self.score_weight,
+        )
+        return self.kmeans.predict(features) == self.cluster
+
+
+@dataclass
 class UndercoverageRiskGroup:
     name: str
     scaler: StandardScaler
@@ -415,6 +435,84 @@ def discover_kmeans(
     kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init="auto").fit(scaler.transform(z))
     candidates = [KMeansGroup(name=f"kmeans_c{k}", scaler=scaler, kmeans=kmeans, cluster=k) for k in range(n_clusters)]
     return _filter_groups(candidates, z, observed_scores, failures, alpha, "kmeans", min_size, epsilon, enrichment, max_groups)
+
+
+def discover_cp_score_kmeans(
+    z: np.ndarray,
+    observed_scores: np.ndarray,
+    failures: np.ndarray,
+    alpha: float,
+    n_clusters: int = 30,
+    min_size: int = 40,
+    epsilon: float = 0.03,
+    enrichment: float = 1.20,
+    max_groups: int = 8,
+    score_weight: float = 8.0,
+    seed: int = 7,
+) -> tuple[list[GroupFunction], list[SliceDiagnostics]]:
+    embedding_scaler = StandardScaler().fit(z)
+    score_scaler = StandardScaler().fit(_cp_score_features(observed_scores, len(z)))
+    features = _cp_augmented_features(z, observed_scores, embedding_scaler, score_scaler, score_weight)
+    kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init="auto").fit(features)
+    candidates = [
+        CPScoreKMeansGroup(
+            name=f"cp_score_kmeans_c{k}",
+            embedding_scaler=embedding_scaler,
+            score_scaler=score_scaler,
+            kmeans=kmeans,
+            cluster=k,
+            score_weight=score_weight,
+        )
+        for k in range(n_clusters)
+    ]
+    return _filter_groups(candidates, z, observed_scores, failures, alpha, "cp_score_kmeans", min_size, epsilon, enrichment, max_groups)
+
+
+def _cp_augmented_features(
+    z: np.ndarray,
+    observed_scores: np.ndarray | None,
+    embedding_scaler: StandardScaler,
+    score_scaler: StandardScaler,
+    score_weight: float,
+) -> np.ndarray:
+    transformed_embeddings = embedding_scaler.transform(z)
+    score_features = score_scaler.transform(_cp_score_features(observed_scores, len(z)))
+    return np.hstack([transformed_embeddings, score_weight * score_features])
+
+
+def _cp_score_features(
+    observed_scores: np.ndarray | None,
+    n: int,
+) -> np.ndarray:
+    if observed_scores is None:
+        return np.zeros((n, 1), dtype=np.float64)
+    scores = np.asarray(observed_scores)
+    if scores.ndim == 1:
+        uncertainty = scores.astype(np.float64)
+        return np.column_stack(
+            [
+                uncertainty,
+                uncertainty**2,
+            ]
+        )
+    probs = scores.astype(np.float64)
+    sorted_probs = np.sort(probs, axis=1)[:, ::-1]
+    top1 = sorted_probs[:, 0]
+    top2 = sorted_probs[:, 1] if probs.shape[1] > 1 else np.zeros(len(probs), dtype=np.float64)
+    uncertainty = 1.0 - top1
+    margin = top1 - top2
+    entropy = -(probs * np.log(np.clip(probs, 1e-12, 1.0))).sum(axis=1)
+    normalized_entropy = entropy / max(np.log(probs.shape[1]), 1e-12)
+    aps_top = np.cumsum(sorted_probs, axis=1)[:, min(1, probs.shape[1] - 1)]
+    return np.column_stack(
+        [
+            uncertainty,
+            1.0 - margin,
+            normalized_entropy,
+            aps_top,
+            top1,
+        ]
+    )
 
 
 def discover_undercoverage_risk(
