@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 import warnings
 
 import numpy as np
@@ -27,6 +28,7 @@ def evaluate_threshold_model(
     observed_scores: np.ndarray | None = None,
     eval_observed_scores: np.ndarray | None = None,
     own_groups: list[GroupFunction] | None = None,
+    sensitive_groups: dict[str, np.ndarray] | None = None,
 ) -> dict[str, float | str | int]:
     true_scores = true_label_scores(score_matrix, y)
     if observed_scores is None:
@@ -44,8 +46,10 @@ def evaluate_threshold_model(
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
-    row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
-    row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
+    if not sensitive_groups:
+        row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
+        row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     worst_values = [
         row["worst_shared_discovered_slice_coverage"],
@@ -184,6 +188,7 @@ def evaluate_classwise_model(
     observed_scores: np.ndarray | None = None,
     eval_observed_scores: np.ndarray | None = None,
     own_groups: list[GroupFunction] | None = None,
+    sensitive_groups: dict[str, np.ndarray] | None = None,
 ) -> dict[str, float | str | int]:
     if observed_scores is None:
         observed_scores = score_matrix.min(axis=1)
@@ -199,8 +204,10 @@ def evaluate_classwise_model(
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
-    row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
-    row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
+    if not sensitive_groups:
+        row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
+        row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
         float(row[key])
@@ -226,6 +233,7 @@ def evaluate_groupwise_model(
     observed_scores: np.ndarray | None = None,
     eval_observed_scores: np.ndarray | None = None,
     own_groups: list[GroupFunction] | None = None,
+    sensitive_groups: dict[str, np.ndarray] | None = None,
 ) -> dict[str, float | str | int]:
     if observed_scores is None:
         observed_scores = score_matrix.min(axis=1)
@@ -242,8 +250,10 @@ def evaluate_groupwise_model(
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
-    row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
-    row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
+    if not sensitive_groups:
+        row.update(_label_coverages("known_group_coverage_group", known_group, is_covered))
+        row["worst_known_group_coverage"] = _worst_label_coverage(known_group, is_covered)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
     finite = [
         float(row[key])
@@ -362,6 +372,24 @@ def _worst_label_coverage(labels: np.ndarray | None, covered_mask: np.ndarray, m
     return float(min(values)) if values else float("nan")
 
 
+def _add_sensitive_group_metrics(
+    row: dict[str, float | str | int],
+    sensitive_groups: dict[str, np.ndarray] | None,
+    covered_mask: np.ndarray,
+) -> None:
+    if not sensitive_groups:
+        return
+    worst_values = []
+    for attribute, labels in sensitive_groups.items():
+        attribute_token = _column_token(attribute)
+        row.update(_label_coverages(f"known_group_coverage_{attribute_token}_group", labels, covered_mask))
+        worst = _worst_label_coverage(labels, covered_mask)
+        row[f"worst_known_group_coverage_{attribute_token}"] = worst
+        if not np.isnan(worst):
+            worst_values.append(worst)
+    row["worst_known_group_coverage"] = float(min(worst_values)) if worst_values else float("nan")
+
+
 def _label_coverages(prefix: str, labels: np.ndarray | None, covered_mask: np.ndarray, min_size: int = 20) -> dict[str, float]:
     if labels is None:
         return {}
@@ -369,5 +397,10 @@ def _label_coverages(prefix: str, labels: np.ndarray | None, covered_mask: np.nd
     for label in np.unique(labels):
         mask = labels == label
         if mask.sum() >= min_size:
-            values[f"{prefix}_{label}"] = float(covered_mask[mask].mean())
+            values[f"{prefix}_{_column_token(label)}"] = float(covered_mask[mask].mean())
     return values
+
+
+def _column_token(value: object) -> str:
+    token = re.sub(r"[^a-zA-Z0-9]+", "_", str(value)).strip("_").lower()
+    return token or "unknown"
