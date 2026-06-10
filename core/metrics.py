@@ -29,6 +29,8 @@ def evaluate_threshold_model(
     eval_observed_scores: np.ndarray | None = None,
     own_groups: list[GroupFunction] | None = None,
     sensitive_groups: dict[str, np.ndarray] | None = None,
+    fixed_subgroup_mask: np.ndarray | None = None,
+    fixed_subgroup_name: str = "",
 ) -> dict[str, float | str | int]:
     true_scores = true_label_scores(score_matrix, y)
     if observed_scores is None:
@@ -45,6 +47,7 @@ def evaluate_threshold_model(
     _add_target_metrics(row, alpha)
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
+    _add_fixed_subgroup_metrics(row, fixed_subgroup_mask, fixed_subgroup_name, is_covered, sizes, alpha)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     if not sensitive_groups:
         _add_known_group_metrics(row, known_group, is_covered, alpha)
@@ -61,6 +64,37 @@ def evaluate_threshold_model(
         row["max_undercoverage_gap"] = max(0.0, (1.0 - alpha) - min(float(v) for v in finite))
     return row
 
+
+
+def _add_fixed_subgroup_metrics(
+    row: dict[str, float | str | int],
+    mask: np.ndarray | None,
+    name: str,
+    covered_mask: np.ndarray,
+    sizes: np.ndarray,
+    alpha: float,
+) -> None:
+    row["fixed_subgroup"] = name
+    if mask is None:
+        row["fixed_subgroup_size"] = float("nan")
+        row["fixed_subgroup_coverage"] = float("nan")
+        row["fixed_subgroup_avg_set_size"] = float("nan")
+        row["fixed_subgroup_undercoverage_gap"] = float("nan")
+        return
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape[0] != covered_mask.shape[0]:
+        raise ValueError("fixed_subgroup_mask must match the evaluation set length")
+    count = int(mask.sum())
+    row["fixed_subgroup_size"] = count
+    if count == 0:
+        row["fixed_subgroup_coverage"] = float("nan")
+        row["fixed_subgroup_avg_set_size"] = float("nan")
+        row["fixed_subgroup_undercoverage_gap"] = float("nan")
+        return
+    coverage = float(covered_mask[mask].mean())
+    row["fixed_subgroup_coverage"] = coverage
+    row["fixed_subgroup_avg_set_size"] = float(sizes[mask].mean())
+    row["fixed_subgroup_undercoverage_gap"] = max(0.0, (1.0 - alpha) - coverage)
 
 def diagnostics_to_frame(diags: list[SliceDiagnostics]) -> pd.DataFrame:
     if not diags:
@@ -188,6 +222,8 @@ def evaluate_classwise_model(
     eval_observed_scores: np.ndarray | None = None,
     own_groups: list[GroupFunction] | None = None,
     sensitive_groups: dict[str, np.ndarray] | None = None,
+    fixed_subgroup_mask: np.ndarray | None = None,
+    fixed_subgroup_name: str = "",
 ) -> dict[str, float | str | int]:
     if observed_scores is None:
         observed_scores = score_matrix.min(axis=1)
@@ -202,6 +238,7 @@ def evaluate_classwise_model(
     _add_target_metrics(row, alpha)
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
+    _add_fixed_subgroup_metrics(row, fixed_subgroup_mask, fixed_subgroup_name, is_covered, sizes, alpha)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     if not sensitive_groups:
         _add_known_group_metrics(row, known_group, is_covered, alpha)
@@ -232,6 +269,8 @@ def evaluate_groupwise_model(
     eval_observed_scores: np.ndarray | None = None,
     own_groups: list[GroupFunction] | None = None,
     sensitive_groups: dict[str, np.ndarray] | None = None,
+    fixed_subgroup_mask: np.ndarray | None = None,
+    fixed_subgroup_name: str = "",
 ) -> dict[str, float | str | int]:
     if observed_scores is None:
         observed_scores = score_matrix.min(axis=1)
@@ -247,6 +286,7 @@ def evaluate_groupwise_model(
     _add_target_metrics(row, alpha)
     eval_scores = eval_observed_scores if eval_observed_scores is not None else observed_scores
     _add_group_coverage_metrics(row, discovered_groups, own_groups, z, eval_scores, is_covered)
+    _add_fixed_subgroup_metrics(row, fixed_subgroup_mask, fixed_subgroup_name, is_covered, sizes, alpha)
     row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
     if not sensitive_groups:
         _add_known_group_metrics(row, known_group, is_covered, alpha)

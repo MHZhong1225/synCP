@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon", type=float, default=0.02)
     parser.add_argument("--enrichment", type=float, default=1.10)
     parser.add_argument("--cache", action="store_true")
+    parser.add_argument("--cache-file", type=Path, default=None, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -67,7 +68,7 @@ def main() -> None:
 
 def _load_or_fit_features(args: argparse.Namespace, data: MimicCareData) -> tuple[np.ndarray, np.ndarray]:
     cache_name = "mimic_care.npz" if args.feature_mode == "text_triage" else f"mimic_care_{args.feature_mode}.npz"
-    path = Path("results/npz") / cache_name
+    path = args.cache_file if args.cache_file is not None else Path("results/npz") / cache_name
     path.parent.mkdir(parents=True, exist_ok=True)
     if args.cache and path.exists():
         cached = np.load(path)

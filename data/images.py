@@ -6,6 +6,7 @@ from io import BytesIO
 import re
 import warnings
 from pathlib import Path
+import os
 from zipfile import ZipFile
 
 import numpy as np
@@ -201,6 +202,7 @@ def load_rsna_breast_experiment(
     metadata = metadata[metadata["path"].map(_dicom_header_is_readable)].copy()
     if max_samples is not None and len(metadata) > max_samples:
         metadata = _balanced_image_sample(metadata, "cancer", max_samples, seed)
+    metadata = metadata[metadata["path"].map(_dicom_has_pixel_data)].copy()
     metadata = metadata.reset_index(drop=True)
 
     labels = metadata["cancer"].to_numpy(dtype=np.int64)
@@ -669,8 +671,11 @@ def _read_dicom_image(path: Path) -> Image.Image:
 
     dicom = pydicom.dcmread(path)
     if not hasattr(dicom, "PixelData"):
-        raise ValueError(f"DICOM file has no pixel data: {path}")
-    array = dicom.pixel_array.astype(np.float32)
+        return _blank_dicom_image()
+    try:
+        array = dicom.pixel_array.astype(np.float32)
+    except Exception:
+        return _blank_dicom_image()
     if getattr(dicom, "PhotometricInterpretation", "") == "MONOCHROME1":
         array = array.max() - array
     low, high = np.percentile(array, [1.0, 99.0])
@@ -682,6 +687,10 @@ def _read_dicom_image(path: Path) -> Image.Image:
         normalized = np.clip((array - low) / (high - low), 0.0, 1.0)
         normalized = (normalized * 255.0).astype(np.uint8)
     return Image.fromarray(normalized).convert("RGB")
+
+
+def _blank_dicom_image() -> Image.Image:
+    return Image.fromarray(np.zeros((224, 224), dtype=np.uint8)).convert("RGB")
 
 
 def _dicom_header_is_readable(path: Path) -> bool:
@@ -697,6 +706,21 @@ def _dicom_header_is_readable(path: Path) -> bool:
     except Exception:
         return False
     return True
+
+
+def _dicom_has_pixel_data(path: Path) -> bool:
+    try:
+        import pydicom
+    except ImportError as exc:
+        raise ImportError("RSNA breast DICOM loading requires pydicom.") from exc
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dicom = pydicom.dcmread(path, specific_tags=["PixelData"])
+    except Exception:
+        return False
+    return hasattr(dicom, "PixelData")
 
 
 def _balanced_image_sample(metadata: pd.DataFrame, label_column: str, max_samples: int, seed: int) -> pd.DataFrame:
@@ -996,13 +1020,15 @@ def predict_image_dataset(
 
 
 def _loader_kwargs(device: str) -> dict[str, object]:
-    workers = 20
-    return {
+    workers = int(os.environ.get("DOCP_NUM_WORKERS", "4"))
+    kwargs: dict[str, object] = {
         "num_workers": workers,
         "pin_memory": device.startswith("cuda"),
-        "persistent_workers": workers > 0,
-        "prefetch_factor": 4,
+        "persistent_workers": False,
     }
+    if workers > 0:
+        kwargs["prefetch_factor"] = int(os.environ.get("DOCP_PREFETCH_FACTOR", "2"))
+    return kwargs
 
 
 def _build_backbone(backbone: str, pretrained: bool, checkpoint: Path | None) -> tuple[nn.Module, int]:
