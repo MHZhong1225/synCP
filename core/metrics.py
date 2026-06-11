@@ -15,6 +15,55 @@ from core.rectification import ThresholdModel
 from slices.discovery import GroupFunction, SliceDiagnostics
 
 
+def evaluate_prediction_sets(
+    name: str,
+    prediction_sets: np.ndarray,
+    z: np.ndarray,
+    y: np.ndarray,
+    hidden_groups: np.ndarray | None,
+    known_group: np.ndarray | None,
+    discovered_groups: list[GroupFunction],
+    alpha: float,
+    observed_scores: np.ndarray,
+    own_groups: list[GroupFunction] | None = None,
+    sensitive_groups: dict[str, np.ndarray] | None = None,
+    fixed_subgroup_mask: np.ndarray | None = None,
+    fixed_subgroup_name: str = "",
+) -> dict[str, float | str | int]:
+    prediction_sets = np.asarray(prediction_sets, dtype=bool)
+    if prediction_sets.ndim != 2 or prediction_sets.shape[0] != len(y):
+        raise ValueError("prediction_sets must have shape (n_examples, n_classes)")
+    is_covered = prediction_sets[np.arange(len(y)), y]
+    sizes = prediction_sets.sum(axis=1)
+    row: dict[str, float | str | int] = {
+        "method": name,
+        "marginal_coverage": float(is_covered.mean()),
+        "avg_set_size": float(sizes.mean()),
+        "max_undercoverage_gap": max(0.0, (1.0 - alpha) - float(is_covered.mean())),
+    }
+    _add_target_metrics(row, alpha)
+    _add_group_coverage_metrics(row, discovered_groups, own_groups, z, observed_scores, is_covered)
+    _add_fixed_subgroup_metrics(row, fixed_subgroup_mask, fixed_subgroup_name, is_covered, sizes, alpha)
+    row["worst_hidden_group_coverage"] = _worst_binary_matrix_coverage(hidden_groups, is_covered)
+    if not sensitive_groups:
+        _add_known_group_metrics(row, known_group, is_covered, alpha)
+    _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
+    row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
+    finite = [
+        float(row[key])
+        for key in [
+            "worst_shared_discovered_slice_coverage",
+            "worst_hidden_group_coverage",
+            "worst_known_group_coverage",
+            "worst_class_coverage",
+        ]
+        if not np.isnan(float(row[key]))
+    ]
+    if finite:
+        row["max_undercoverage_gap"] = max(0.0, (1.0 - alpha) - min(finite))
+    return row
+
+
 def evaluate_threshold_model(
     name: str,
     model: ThresholdModel,

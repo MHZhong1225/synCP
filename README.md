@@ -91,7 +91,7 @@ Classwise CP
 Known-group CP
 CQR
 AFCP
-FaReF
+FaReG
 Ours
 ```
 
@@ -102,7 +102,7 @@ conda run -n ucp python baseline/run_baseline_benchmark.py \
   --seeds 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
   --repeat-cache-root results/npz/repeats \
   --methods standard classwise known cqr afcp fareg \
-  --outdir results/combined_main_results/baseline_selected
+  --outdir results/combined_main_results/baseline_selected_original
 ```
 
 Build the combined 20-seed tables:
