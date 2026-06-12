@@ -12,7 +12,7 @@ from data.mimic_care import load_mimic_care_experiment
 from experiments import images as image_experiment
 
 
-IMAGE_TASKS = ("bracs", "ham10000", "isic", "rsna_5k")
+IMAGE_TASKS = ("ham10000", "isic", "rsna_5k")
 MIMIC_CXR_TARGETS = {
     "effusion": "Pleural Effusion",
     "pneumonia": "Pneumonia",
@@ -55,6 +55,9 @@ CORE_RESULT_COLUMNS = (
     "known_group_attribute_macro_coverage",
     "known_group_attribute_mean_undercoverage_gap",
     "known_group_attribute_mean_absolute_coverage_gap",
+    "worst_shared_discovered_slice_coverage",
+    "worst_own_pool_coverage",
+    "max_common_undercoverage_gap",
     "max_undercoverage_gap",
     "worst_hidden_group_coverage",
     "task",
@@ -165,7 +168,7 @@ def load_task(task_name: str, family: str, split_seed: int, cache_root: Path = P
         task_args.cache_file = cache_root / f"{task_name}.npz"
     data = image_experiment.load_experiment_data(task_args)
     probs, embeddings = image_experiment._load_feature_cache(task_args.cache_file, len(data.class_names), task_args.backbone)
-    return task_args, data, probs, embeddings, image_experiment._resolve_score(len(data.class_names))
+    return task_args, data, probs, embeddings, image_experiment._resolve_score(len(data.class_names), task_name)
 
 
 def format_result_columns(frame: pd.DataFrame, task_name: str, family: str) -> pd.DataFrame:

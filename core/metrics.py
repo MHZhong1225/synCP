@@ -49,6 +49,7 @@ def evaluate_prediction_sets(
         _add_known_group_metrics(row, known_group, is_covered, alpha)
     _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
+    _add_common_undercoverage_gap(row, alpha)
     finite = [
         float(row[key])
         for key in [
@@ -102,6 +103,7 @@ def evaluate_threshold_model(
         _add_known_group_metrics(row, known_group, is_covered, alpha)
     _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
+    _add_common_undercoverage_gap(row, alpha)
     worst_values = [
         row["worst_shared_discovered_slice_coverage"],
         row["worst_hidden_group_coverage"],
@@ -293,6 +295,7 @@ def evaluate_classwise_model(
         _add_known_group_metrics(row, known_group, is_covered, alpha)
     _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
+    _add_common_undercoverage_gap(row, alpha)
     finite = [
         float(row[key])
         for key in ["worst_shared_discovered_slice_coverage", "worst_hidden_group_coverage", "worst_known_group_coverage", "worst_class_coverage"]
@@ -341,6 +344,7 @@ def evaluate_groupwise_model(
         _add_known_group_metrics(row, known_group, is_covered, alpha)
     _add_sensitive_group_metrics(row, sensitive_groups, is_covered, alpha)
     row["worst_class_coverage"] = _worst_label_coverage(y, is_covered)
+    _add_common_undercoverage_gap(row, alpha)
     finite = [
         float(row[key])
         for key in ["worst_shared_discovered_slice_coverage", "worst_hidden_group_coverage", "worst_known_group_coverage", "worst_class_coverage"]
@@ -408,6 +412,20 @@ def _add_target_metrics(row: dict[str, float | str | int], alpha: float) -> None
     row["marginal_target_error"] = abs(marginal - target)
     row["marginal_undercoverage"] = max(0.0, target - marginal)
     row["marginal_overcoverage"] = max(0.0, marginal - target)
+
+
+def _add_common_undercoverage_gap(row: dict[str, float | str | int], alpha: float) -> None:
+    """Worst gap over evaluation groups shared by every compared method."""
+    values = [
+        row.get("marginal_coverage"),
+        row.get("worst_hidden_group_coverage"),
+        row.get("worst_known_group_coverage"),
+        row.get("worst_class_coverage"),
+    ]
+    finite = [float(value) for value in values if value is not None and not np.isnan(float(value))]
+    row["max_common_undercoverage_gap"] = (
+        max(0.0, (1.0 - alpha) - min(finite)) if finite else float("nan")
+    )
 
 
 def _add_group_coverage_metrics(

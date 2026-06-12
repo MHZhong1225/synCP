@@ -164,8 +164,8 @@ def run_experiment(args: argparse.Namespace, show_progress: bool = True, write_c
 
     data = load_experiment_data(args)
     probs, embeddings = load_or_create_features(args, data, device)
-    score = _resolve_score(len(data.class_names))
-    score_matrix = score_matrix_from_probs(probs, score)
+    score = _resolve_score(len(data.class_names), args.preset)
+    score_matrix = score_matrix_from_probs(probs, score, random_state=args.seed)
     observed_uncertainty = observable_uncertainty(probs)
 
     calib_scores = true_label_scores(score_matrix[data.calib0_idx], data.labels[data.calib0_idx])
@@ -634,8 +634,9 @@ def _pool_source_outputs(discovery_outputs: dict[str, list[GroupFunction]], num_
     return {method: class_conditional_groups(groups, num_classes) for method, groups in discovery_outputs.items()}
 
 
-def _resolve_score(num_classes: int) -> str:
-    return "aps" if num_classes > 2 else "inverse_probability"
+def _resolve_score(num_classes: int, dataset: str | None = None) -> str:
+    del dataset
+    return "randomized_aps" if num_classes > 2 else "inverse_probability"
 
 
 def _load_feature_cache(path: Path, num_classes: int, backbone: str) -> tuple[np.ndarray, np.ndarray]:

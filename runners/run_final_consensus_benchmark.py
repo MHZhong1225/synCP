@@ -30,7 +30,7 @@ DISPLAY_NAMES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the final consensus benchmark across all datasets.")
-    parser.add_argument("--tasks", nargs="+", default=["bracs", "nih_all", "isic", "ham10000", "rsna_5k", "mimic_care", "mimic_cxr_all"])
+    parser.add_argument("--tasks", nargs="+", default=["nih_all", "isic", "ham10000", "rsna_5k", "mimic_care", "mimic_cxr_all"])
     parser.add_argument("--nih-targets", nargs="+", default=NIH_TARGETS)
     parser.add_argument("--split-seed", type=int, default=7)
     parser.add_argument("--cache-root", type=Path, default=Path("results/npz"), help="Directory containing cached .npz files for this full-system run.")
@@ -63,9 +63,24 @@ def main() -> None:
     write_main_tables(args.outdir / "all_results.csv", args.outdir / "main_tables_by_dataset")
 
 
-def run_task(task: str, family: str, split_seed: int, cache_root: Path = Path("results/npz")) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_task(
+    task: str,
+    family: str,
+    split_seed: int,
+    cache_root: Path = Path("results/npz"),
+    score_override: str | None = None,
+    raps_penalty: float = 0.01,
+    raps_regularization_rank: int = 5,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     task_args, data, probs, embeddings, score_name = load_task(task, family, split_seed, cache_root=cache_root)
-    score_matrix = score_matrix_from_probs(probs, score_name)
+    score_name = score_override or score_name
+    score_matrix = score_matrix_from_probs(
+        probs,
+        score_name,
+        random_state=task_args.seed,
+        raps_penalty=raps_penalty,
+        raps_regularization_rank=raps_regularization_rank,
+    )
     uncertainty = observable_uncertainty(probs)
     base_q = conformal_quantile(true_label_scores(score_matrix[data.calib0_idx], data.labels[data.calib0_idx]), task_args.alpha)
     failures = ~covered(score_matrix[data.discovery_idx], data.labels[data.discovery_idx], base_q)
@@ -316,6 +331,7 @@ def _write_config(args: argparse.Namespace) -> None:
         "nih_targets": args.nih_targets,
         "method_seeds": {method: list(seeds) for method, seeds in METHOD_SEEDS.items()},
         "split_seed": args.split_seed,
+        "score_policy": "multiclass randomized APS; binary inverse probability",
         "cache_root": str(args.cache_root),
         "control": "fixed cached features; final method is Consensus-CPScore using CP-score-augmented discovery",
     }

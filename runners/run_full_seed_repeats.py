@@ -21,7 +21,7 @@ from experiments import mimic_care  # noqa: E402
 from reports.final_benchmark_report import DATASET_NAMES, SUMMARY_METRICS, _method_order  # noqa: E402
 from runners.benchmark_tasks import MIMIC_CXR_TARGETS, NIH_TARGETS, expand_tasks, make_image_args, target_suffix  # noqa: E402
 
-IMAGE_TASKS = {'bracs', 'ham10000', 'isic', 'rsna_5k'}
+IMAGE_TASKS = {'ham10000', 'isic', 'rsna_5k'}
 NIH_SUFFIX_TO_TARGET = {target_suffix(target): target for target in NIH_TARGETS}
 
 
@@ -73,7 +73,7 @@ def run_seed(seed: int, args: argparse.Namespace) -> None:
     cache_root.mkdir(parents=True, exist_ok=True)
     seed_outdir.mkdir(parents=True, exist_ok=True)
     print(f'[{seed_name}] generating full-system caches in {cache_root}', flush=True)
-    for task, family in expand_tasks(['bracs', 'nih_all', 'isic', 'ham10000', 'rsna_5k', 'mimic_care', 'mimic_cxr_all'], NIH_TARGETS):
+    for task, family in expand_tasks(['nih_all', 'isic', 'ham10000', 'rsna_5k', 'mimic_care', 'mimic_cxr_all'], NIH_TARGETS):
         generate_cache(task, family, seed, cache_root, seed_outdir, args.gpu)
     print(f'[{seed_name}] evaluating final benchmark', flush=True)
     run_final_benchmark(seed, cache_root, seed_outdir / 'final')
