@@ -73,7 +73,7 @@ def _load_or_fit_features(args: argparse.Namespace, data: MimicCareData) -> tupl
     if args.cache and path.exists():
         cached = np.load(path)
         if "feature_mode" not in cached or str(cached["feature_mode"]) != args.feature_mode:
-            raise ValueError("Cached MIMIC care features were created for a different feature mode.")
+            raise ValueError("Cached MIMIC IV features were created for a different feature mode.")
         return cached["probs"], cached["embeddings"]
     vectorizer = FeatureUnion(
         [
