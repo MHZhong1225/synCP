@@ -56,7 +56,7 @@ def load_mimic_care_experiment(
     splits = _patient_level_splits(cohort, seed)
     group_frame = cohort[GROUP_COLUMNS].copy()
     if known_group not in group_frame:
-        raise ValueError(f"Unknown MIMIC care group: {known_group}")
+        raise ValueError(f"Unknown MIMIC IV group: {known_group}")
     _, encoded_group = np.unique(group_frame[known_group].to_numpy(), return_inverse=True)
     return MimicCareData(
         documents=cohort["document"].to_numpy(dtype=str),

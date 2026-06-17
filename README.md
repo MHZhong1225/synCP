@@ -2,6 +2,10 @@
 
 SCOPE studies hidden undercoverage in medical prediction sets. The maintained method is `Consensus-CPScore`: CP-score-aware latent subgroup discovery, consensus aggregation, and evidence-gated BatchGCP calibration.
 
+For a complete Chinese overview of the method, its improvement chain, current
+evidence, and claim boundaries, see
+[`docs/method_complete_summary_zh.md`](docs/method_complete_summary_zh.md).
+
 ## Project Layout
 
 ```text

@@ -476,8 +476,29 @@ def _cp_augmented_features(
     score_weight: float,
 ) -> np.ndarray:
     transformed_embeddings = embedding_scaler.transform(z)
-    score_features = score_scaler.transform(_cp_score_features(observed_scores, len(z)))
+    score_features = _cp_score_features_for_scaler(observed_scores, len(z), score_scaler)
+    score_features = score_scaler.transform(score_features)
     return np.hstack([transformed_embeddings, score_weight * score_features])
+
+
+def _cp_score_features_for_scaler(
+    observed_scores: np.ndarray | None,
+    n: int,
+    score_scaler: StandardScaler,
+) -> np.ndarray:
+    features = _cp_score_features(observed_scores, n)
+    expected = getattr(score_scaler, "n_features_in_", features.shape[1])
+    if features.shape[1] == expected:
+        return features
+    if observed_scores is None:
+        return np.zeros((n, expected), dtype=np.float64)
+    scores = np.asarray(observed_scores)
+    if expected == 2 and scores.ndim == 2:
+        uncertainty = 1.0 - scores.max(axis=1)
+        return _cp_score_features(uncertainty, n)
+    raise ValueError(
+        f"CP-score features have {features.shape[1]} columns, but the fitted scaler expects {expected}."
+    )
 
 
 def _cp_score_features(
