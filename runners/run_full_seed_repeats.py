@@ -229,7 +229,7 @@ def refresh_aggregate_outputs(outdir: Path) -> None:
     summary = summary.sort_values(['dataset', '_method_order', 'method']).drop(columns='_method_order').reset_index(drop=True)
     summary.to_csv(outdir / 'main_results_mean_std.csv', index=False, float_format='%.5f')
     figure_source = summary[summary['method'].isin(['Standard CP', 'Classwise CP', 'Consensus-CPScore']) | summary['method'].str.startswith('Known-group CP')].copy()
-    figure_source.to_csv(outdir / 'scope_figure_source.csv', index=False, float_format='%.5f')
+    figure_source.to_csv(outdir / 'ConCP_figure_source.csv', index=False, float_format='%.5f')
 
 
 def mean_std(frame: pd.DataFrame, group_columns: list[str]) -> pd.DataFrame:
