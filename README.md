@@ -34,15 +34,6 @@ Install the key packages used by the main code:
 pip install numpy pandas scipy scikit-learn torch torchvision pillow tqdm
 ```
 
-Additional packages are needed for some datasets or optional comparisons:
-
-- `matplotlib` and `seaborn`: plotting and figure scripts.
-- `pydicom`: RSNA breast DICOM loading.
-- `h5py`: HDF5 image archives.
-- `statsmodels` and `torchmetrics`: external baseline adapters.
-- `pytest`: local test runs.
-
-For GPU runs, install the PyTorch build that matches the local CUDA driver.
 
 ## Data
 
@@ -114,9 +105,3 @@ The benchmark writes CSV summaries with marginal coverage, average set size,
 worst-class coverage, worst known-group coverage, known-group coverage gaps, and
 maximum undercoverage gap.
 
-## Notes For Readers
-
-The README is intended as a practical entry point for running the released code.
-It intentionally omits the internal hyperparameter sweeps and tuning details used
-during development. For paper-level interpretation, use the manuscript text and
-the generated result tables together.
