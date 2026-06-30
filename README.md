@@ -1,9 +1,9 @@
-# synCP
+# ConCP
 
-synCP studies hidden undercoverage in medical prediction sets. The repository
-implements `Consensus-CPScore`, a conformal-prediction workflow that discovers
-latent subgroups with unreliable coverage, aggregates candidate slices, and
-applies evidence-gated group calibration.
+ConCP is a consensus conformal prediction framework for improving subgroup
+reliability without predefined subgroup identities. It discovers latent
+subgroups with unreliable coverage, aggregates candidate slices, and applies
+evidence-gated group calibration.
 
 ## Repository Layout
 
@@ -24,8 +24,8 @@ The code is Python-based and was developed with a conda environment. A recent
 Python 3.10+ environment with PyTorch is recommended.
 
 ```bash
-conda create -n syncp python=3.11
-conda activate syncp
+conda create -n concp python=3.11
+conda activate concp
 ```
 
 Install the key packages used by the main code:
