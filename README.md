@@ -1,167 +1,122 @@
-# ConCP
+# synCP
 
-ConCP studies hidden undercoverage in medical prediction sets. The maintained method is `Consensus-CPScore`: CP-score-aware latent subgroup discovery, consensus aggregation, and evidence-gated BatchGCP calibration.
+synCP studies hidden undercoverage in medical prediction sets. The repository
+implements `Consensus-CPScore`, a conformal-prediction workflow that discovers
+latent subgroups with unreliable coverage, aggregates candidate slices, and
+applies evidence-gated group calibration.
 
-
-## Project Layout
+## Repository Layout
 
 ```text
-core/          conformal scores, metrics, consensus aggregation, and rectification
-slices/        CP-score-aware latent subgroup discovery
+core/          conformal scores, coverage metrics, consensus aggregation, calibration
+slices/        latent subgroup discovery utilities
 data/          dataset loaders and feature/prediction cache helpers
-experiments/   single-dataset experiment entry points
-runners/       maintained full-benchmark runners only
-baseline/      adapters for the retained external baselines
-reports/       report utilities and final plotting scripts
-docs/          manuscript and dataset notes
+experiments/   entry points for synthetic, image, and MIMIC ED-to-ICU experiments
+runners/       benchmark runners that operate on cached predictions/features
 ```
+
+Generated outputs are written under `results/` and are not part of the source
+release.
 
 ## Environment
 
-Run from the repository root. The project is tested with the `ucp` conda environment on the remote server.
+The code is Python-based and was developed with a conda environment. A recent
+Python 3.10+ environment with PyTorch is recommended.
 
 ```bash
-conda activate ucp
+conda create -n syncp python=3.11
+conda activate syncp
 ```
 
-Use GPU devices for feature generation or model fitting whenever available, for example `--device cuda:0`.
-
-## Single-Dataset Experiments
-
-Synthetic sanity check:
+Install the key packages used by the main code:
 
 ```bash
-python -m experiments.synthetic --outdir results/synthetic --device cuda --seed 7
+pip install numpy pandas scipy scikit-learn torch torchvision pillow tqdm
 ```
 
-Image datasets use `experiments.images`. Examples:
+Additional packages are needed for some datasets or optional comparisons:
+
+- `matplotlib` and `seaborn`: plotting and figure scripts.
+- `pydicom`: RSNA breast DICOM loading.
+- `h5py`: HDF5 image archives.
+- `statsmodels` and `torchmetrics`: external baseline adapters.
+- `pytest`: local test runs.
+
+For GPU runs, install the PyTorch build that matches the local CUDA driver.
+
+## Data
+
+Datasets are not included in this repository. The loaders expect local copies of
+the corresponding datasets and metadata files. The supported experiment families
+include synthetic data, HAM10000, ISIC, NIH ChestXray14, RSNA Breast Cancer
+Detection, MIMIC-CXR report-label tasks, and MIMIC-IV ED-to-ICU.
+
+Use each dataset only under its original license and access policy. Point the
+commands below to the local dataset roots on your machine or server.
+
+## Quick Start
+
+Run the synthetic sanity check:
 
 ```bash
-python -m experiments.images --dataset-type nih --dataset-root ../dataset/NIH_ChestXrays --nih-target Effusion --known-group gender --max-samples 5000 --outdir results/nih_effusion --device cuda:0 --cache
-python -m experiments.images --preset isic --outdir results/isic --device cuda:0 --cache
-python -m experiments.images --dataset-type rsna_5k --dataset-root ../dataset/rsna-breast --outdir results/rsna_5k --device cuda:0 --max-samples 5000 --cache
+python -m experiments.synthetic --outdir results/synthetic --device cuda
 ```
 
-MIMIC ED-to-ICU uses the text/triage loader:
+Run an ISIC image experiment:
 
 ```bash
-python -m experiments.mimic_care --outdir results/mimic_care --cache
+python -m experiments.images \
+  --dataset-type isic \
+  --dataset-root /path/to/ISIC \
+  --known-group anatom_site_general \
+  --outdir results/isic \
+  --device cuda:0 \
+  --cache
 ```
 
-Feature caches are stored under `results/npz/` so cached model outputs remain separate from experiment tables.
-
-Multiclass experiments use randomized APS with reproducible per-example draws
-bound to the full-system seed. Binary experiments use inverse-probability
-scores.
-
-Run the multiclass conformal-score ablation:
+Run an NIH ChestXray14 one-vs-rest task:
 
 ```bash
-conda run -n ucp python -m runners.run_score_ablation \
-  --tasks isic ham10000 \
-  --scores thr aps randomized_aps raps \
-  --seeds 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+python -m experiments.images \
+  --dataset-type nih \
+  --dataset-root /path/to/NIH_ChestXrays \
+  --nih-target Effusion \
+  --known-group gender \
+  --outdir results/nih_effusion \
+  --device cuda:0 \
+  --cache
 ```
 
-## Maintained Benchmark Runners
-
-The `runners/` package is intentionally small:
-
-| File | Role |
-| --- | --- |
-| `benchmark_tasks.py` | Shared task list, NIH/MIMIC target definitions, cache loading, and result-column normalization. |
-| `run_final_consensus_benchmark.py` | Runs the final all-dataset Consensus-CPScore benchmark from existing `.npz` caches. |
-| `run_full_seed_repeats.py` | Generates per-seed caches, runs the final benchmark, and refreshes 20-seed aggregate CSVs. |
-| `run_ablation_benchmark.py` | Runs the compact component ablation from cached repeat `.npz` files. |
-
-Run the final benchmark from existing caches:
+Run the MIMIC ED-to-ICU experiment:
 
 ```bash
-conda run -n ucp python -m runners.run_final_consensus_benchmark \
+python -m experiments.mimic_care \
+  --mimic-iv-root /path/to/mimic-iv \
+  --mimic-ed-root /path/to/mimic-iv-ed \
+  --outdir results/mimic_care \
+  --cache
+```
+
+Feature and prediction caches are stored under `results/npz/` when caching is
+enabled.
+
+## Benchmark From Caches
+
+After feature/prediction caches have been generated, run the main benchmark with:
+
+```bash
+python -m runners.run_final_consensus_benchmark \
   --cache-root results/npz \
   --outdir results/final_consensus_benchmark
 ```
 
-Run the full 20-seed system, including per-seed cache generation:
+The benchmark writes CSV summaries with marginal coverage, average set size,
+worst-class coverage, worst known-group coverage, known-group coverage gaps, and
+maximum undercoverage gap.
 
-```bash
-conda run -n ucp python -m runners.run_full_seed_repeats \
-  --seeds 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
-  --repeat-cache-root results/npz/repeats \
-  --outdir results/final_consensus_benchmark \
-  --gpu 0 \
-  --keep-npz
-```
+## Notes For Readers
 
-To split seeds over two GPUs, launch two processes with disjoint seed lists and different `--gpu` values. The runner uses a file lock when refreshing aggregate outputs.
-
-Run the compact component ablation from existing repeat caches:
-
-```bash
-conda run -n ucp python -m runners.run_ablation_benchmark \
-  --seeds 1 2 3 \
-  --repeat-cache-root results/npz/repeats \
-  --outdir results/final_ablation
-```
-
-## Baselines and Combined Tables
-
-The retained main-result methods are:
-
-```text
-Standard CP
-Classwise CP
-Known-group CP
-AFCP
-FaReG
-Ours
-```
-
-Run the baseline adapters on existing repeat caches:
-
-```bash
-conda run -n ucp python baseline/run_baseline_benchmark.py \
-  --seeds 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
-  --repeat-cache-root results/npz/repeats \
-  --methods standard classwise known \
-  --outdir results/combined_main_results/baseline_selected_randomized
-```
-
-The combined-table builder reads original AFCP/FaReG results from
-`baseline_selected_original` and the score-controlled common baselines from
-`baseline_selected_randomized`.
-
-Build the combined 20-seed tables:
-
-```bash
-conda run -n ucp python results/combined_main_results/build_combined_tables.py
-```
-
-The primary table files are:
-
-```text
-results/combined_main_results/all_results_by_seed.csv
-results/combined_main_results/main_results_mean_std.csv
-results/combined_main_results/main_results_formatted.csv
-results/combined_main_results/attribute_group_results_mean_std.csv
-```
-
-## Figures
-
-Generate the current paper figures from the combined tables:
-
-```bash
-conda run -n ucp python reports/plot_final_experiment_figures.py \
-  --results results/combined_main_results \
-  --outdir results/figures_pdf
-```
-
-The figure directory is PDF-only and is regenerated by the plotting script.
-
-## Data Notes
-
-The main benchmark covers HAM10000, ISIC, RSNA Breast Cancer Detection, NIH ChestXray14 one-vs-rest tasks, MIMIC-CXR report-label tasks, and MIMIC ED-to-ICU. ISIC preprocessing removes HAM10000 image IDs before the main experiment, while keeping the 12 diagnosis classes that meet the sample threshold.
-
-## Output Convention
-
-CSV outputs round numeric values to five decimals. Main tables report marginal coverage, average set size, worst-class coverage, worst known-group coverage, known-group undercoverage gap, and maximum undercoverage gap. Fixed/XOR subgroup diagnostics are not part of the maintained main-result pipeline.
+The README is intended as a practical entry point for running the released code.
+It intentionally omits the internal hyperparameter sweeps and tuning details used
+during development. For paper-level interpretation, use the manuscript text and
+the generated result tables together.
