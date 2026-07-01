@@ -56,7 +56,7 @@ def main() -> None:
         seed=args.seed,
     )
     _print_settings(args, data)
-    probs, embeddings = _load_or_fit_features(args, data)
+    probs, embeddings = fit_features(args, data)
     write_results(evaluate_classifier(probs[data.test_idx], data.labels[data.test_idx], data.class_names, data.known_group[data.test_idx]), args.outdir / "classification_metrics.csv")
     write_results(_group_time_strata(data), args.outdir / "group_time_strata.csv")
     summary, group_coverage = run_conformal(args, data, probs, embeddings)
@@ -66,7 +66,7 @@ def main() -> None:
     print(f"\nwrote: {args.outdir / 'summary.csv'}")
 
 
-def _load_or_fit_features(args: argparse.Namespace, data: MimicCareData) -> tuple[np.ndarray, np.ndarray]:
+def fit_features(args: argparse.Namespace, data: MimicCareData) -> tuple[np.ndarray, np.ndarray]:
     cache_name = "mimic_care.npz" if args.feature_mode == "text_triage" else f"mimic_care_{args.feature_mode}.npz"
     path = args.cache_file if args.cache_file is not None else Path("results/npz") / cache_name
     path.parent.mkdir(parents=True, exist_ok=True)
