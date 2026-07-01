@@ -138,7 +138,7 @@ def generate_mimic_care_cache(seed: int, cache_root: Path, seed_outdir: Path) ->
     )
     print(f'[{seed:02d}] feature cache mimic_care: {args.cache_file}', flush=True)
     data = load_mimic_care_experiment(args.mimic_iv_root, args.mimic_ed_root, known_group=args.known_group, feature_mode=args.feature_mode, seed=seed)
-    probs, embeddings = mimic_care._load_or_fit_features(args, data)
+    probs, embeddings = mimic_care.fit_features(args, data)
     print(f'[{seed:02d}] wrote mimic_care: probs={probs.shape}, embeddings={embeddings.shape}', flush=True)
 
 

@@ -1,9 +1,7 @@
 # ConCP
 
-ConCP is a consensus conformal prediction framework for improving subgroup
-reliability without predefined subgroup identities. It discovers latent
-subgroups with unreliable coverage, aggregates candidate slices, and applies
-evidence-gated group calibration.
+ConCP is a consensus conformal prediction framework for improving subgroup reliability without predefined subgroup identities. 
+
 
 ## Repository Layout
 
@@ -15,13 +13,10 @@ experiments/   entry points for synthetic, image, and MIMIC ED-to-ICU experiment
 runners/       benchmark runners that operate on cached predictions/features
 ```
 
-Generated outputs are written under `results/` and are not part of the source
-release.
 
 ## Environment
 
-The code is Python-based and was developed with a conda environment. A recent
-Python 3.10+ environment with PyTorch is recommended.
+The code is Python-based and was developed with a conda environment. A recent Python 3.10+ environment with PyTorch is recommended.
 
 ```bash
 conda create -n concp python=3.11
@@ -37,13 +32,9 @@ pip install numpy pandas scipy scikit-learn torch torchvision pillow tqdm
 
 ## Data
 
-Datasets are not included in this repository. The loaders expect local copies of
-the corresponding datasets and metadata files. The supported experiment families
-include synthetic data, HAM10000, ISIC, NIH ChestXray14, RSNA Breast Cancer
-Detection, MIMIC-CXR report-label tasks, and MIMIC-IV ED-to-ICU.
+Datasets are not included in this repository. The loaders expect local copies of the corresponding datasets and metadata files. The supported experiment families include synthetic data, HAM10000, ISIC, NIH ChestXray14, RSNA Breast Cancer Detection, MIMIC-CXR report-label tasks, and MIMIC-IV ED-to-ICU. 
 
-Use each dataset only under its original license and access policy. Point the
-commands below to the local dataset roots on your machine or server.
+Use each dataset only under its original license and access policy. Point the commands below to the local dataset roots.
 
 ## Quick Start
 
@@ -88,8 +79,7 @@ python -m experiments.mimic_care \
   --cache
 ```
 
-Feature and prediction caches are stored under `results/npz/` when caching is
-enabled.
+Feature and prediction caches are stored under `results/npz/` when caching is enabled.
 
 ## Benchmark From Caches
 
@@ -101,7 +91,5 @@ python -m runners.run_final_consensus_benchmark \
   --outdir results/final_consensus_benchmark
 ```
 
-The benchmark writes CSV summaries with marginal coverage, average set size,
-worst-class coverage, worst known-group coverage, known-group coverage gaps, and
-maximum undercoverage gap.
+The benchmark writes CSV summaries with marginal coverage, average set size, worst-class coverage, worst known-group coverage, known-group coverage gaps, and maximum undercoverage gap.
 
