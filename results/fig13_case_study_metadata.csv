@@ -1,0 +1,2 @@
+task,seed,group_name,slice_size,num_test
+ham10000,7,consensus_latent_5,88,986
