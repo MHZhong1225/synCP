@@ -1,0 +1,13 @@
+method,avg_set_size,avg_set_size_std,worst_subgroup_coverage,worst_subgroup_coverage_std,support,observations,panel_index,family,attribute,panel_title,dataset
+Standard CP,2.09777,0.01776,0.85298,0.01934,157.30000,20,0,mimic_care,race,Race,MIMIC-IV
+Classwise CP,2.12553,0.02544,0.85773,0.01788,159.40000,20,0,mimic_care,race,Race,MIMIC-IV
+Known-group CP,2.09051,0.02087,0.86901,0.02617,505.90000,20,0,mimic_care,race,Race,MIMIC-IV
+AFCP,2.19153,0.01673,0.85797,0.02032,329.95000,20,0,mimic_care,race,Race,MIMIC-IV
+FaReG,2.29321,0.03635,0.87733,0.02596,154.50000,20,0,mimic_care,race,Race,MIMIC-IV
+Ours,2.27090,0.02474,0.89293,0.01608,128.10000,20,0,mimic_care,race,Race,MIMIC-IV
+Standard CP,1.53795,0.15929,0.84158,0.04802,80.48000,100,1,mimic_cxr,race,Race,MIMIC-CXR
+Classwise CP,1.54320,0.15480,0.84533,0.04494,77.63000,100,1,mimic_cxr,race,Race,MIMIC-CXR
+Known-group CP,1.55387,0.15383,0.83760,0.05309,81.71000,100,1,mimic_cxr,race,Race,MIMIC-CXR
+AFCP,1.55957,0.14861,0.85046,0.04575,95.53000,100,1,mimic_cxr,race,Race,MIMIC-CXR
+FaReG,1.66839,0.12542,0.89442,0.02994,66.80000,100,1,mimic_cxr,race,Race,MIMIC-CXR
+Ours,1.71962,0.15336,0.91278,0.03889,76.10000,100,1,mimic_cxr,race,Race,MIMIC-CXR

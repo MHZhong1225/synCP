@@ -1,0 +1,13 @@
+method,avg_set_size,avg_set_size_std,worst_subgroup_coverage,worst_subgroup_coverage_std,support,observations,panel_index,family,attribute,panel_title,dataset
+Standard CP,3.47080,0.18446,0.85814,0.01531,503.45000,20,0,isic,age_approx,Age,ISIC
+Classwise CP,4.86859,0.39154,0.88239,0.01482,511.45000,20,0,isic,age_approx,Age,ISIC
+Known-group CP,3.80747,0.23821,0.87783,0.01245,499.80000,20,0,isic,age_approx,Age,ISIC
+AFCP,3.86242,0.32158,0.88102,0.01869,470.75000,20,0,isic,age_approx,Age,ISIC
+FaReG,4.20476,0.36716,0.89923,0.01654,489.85000,20,0,isic,age_approx,Age,ISIC
+Ours,4.14287,0.24001,0.90585,0.01154,571.10000,20,0,isic,age_approx,Age,ISIC
+Standard CP,2.09777,0.01776,0.82730,0.02860,42.35000,20,1,mimic_care,language,Language,MIMIC-IV
+Classwise CP,2.12553,0.02544,0.82849,0.03402,45.60000,20,1,mimic_care,language,Language,MIMIC-IV
+Known-group CP,2.09051,0.02087,0.82534,0.04498,41.85000,20,1,mimic_care,language,Language,MIMIC-IV
+AFCP,2.19153,0.01673,0.82784,0.03191,49.55000,20,1,mimic_care,language,Language,MIMIC-IV
+FaReG,2.29321,0.03635,0.85158,0.03917,52.60000,20,1,mimic_care,language,Language,MIMIC-IV
+Ours,2.27090,0.02474,0.87066,0.02422,41.95000,20,1,mimic_care,language,Language,MIMIC-IV

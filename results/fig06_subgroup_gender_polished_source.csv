@@ -1,0 +1,37 @@
+method,avg_set_size,avg_set_size_std,worst_subgroup_coverage,worst_subgroup_coverage_std,support,observations,panel_index,family,attribute,panel_title,dataset
+Standard CP,2.09777,0.01776,0.89676,0.00432,1572.85000,20,0,mimic_care,gender,Gender,MIMIC-IV
+Classwise CP,2.12553,0.02544,0.89760,0.00649,1608.50000,20,0,mimic_care,gender,Gender,MIMIC-IV
+Known-group CP,2.09051,0.02087,0.89768,0.00474,1554.80000,20,0,mimic_care,gender,Gender,MIMIC-IV
+AFCP,2.19153,0.01673,0.89935,0.00558,1575.70000,20,0,mimic_care,gender,Gender,MIMIC-IV
+FaReG,2.29321,0.03635,0.91782,0.00772,1580.00000,20,0,mimic_care,gender,Gender,MIMIC-IV
+Ours,2.27090,0.02474,0.93065,0.00590,1598.85000,20,0,mimic_care,gender,Gender,MIMIC-IV
+Standard CP,1.53795,0.15929,0.87544,0.03604,174.80000,100,1,mimic_cxr,gender,Gender,MIMIC-CXR
+Classwise CP,1.54320,0.15480,0.87709,0.03035,174.73000,100,1,mimic_cxr,gender,Gender,MIMIC-CXR
+Known-group CP,1.55387,0.15383,0.86260,0.06099,161.55000,100,1,mimic_cxr,gender,Gender,MIMIC-CXR
+AFCP,1.55957,0.14861,0.87884,0.03347,186.15000,100,1,mimic_cxr,gender,Gender,MIMIC-CXR
+FaReG,1.66839,0.12542,0.91541,0.03166,181.21000,100,1,mimic_cxr,gender,Gender,MIMIC-CXR
+Ours,1.71962,0.15336,0.93340,0.02979,177.41000,100,1,mimic_cxr,gender,Gender,MIMIC-CXR
+Standard CP,1.37859,0.18478,0.84285,0.03819,1175.70000,280,2,nih,gender,Gender,NIH
+Classwise CP,1.42553,0.14494,0.83629,0.04164,1175.91429,280,2,nih,gender,Gender,NIH
+Known-group CP,1.38076,0.18540,0.83556,0.04514,1228.47857,280,2,nih,gender,Gender,NIH
+AFCP,1.40646,0.17907,0.84922,0.03770,1202.21429,280,2,nih,gender,Gender,NIH
+FaReG,1.49174,0.18519,0.87925,0.03467,1189.72143,280,2,nih,gender,Gender,NIH
+Ours,1.52474,0.22791,0.89017,0.03982,1174.82143,280,2,nih,gender,Gender,NIH
+Standard CP,1.52602,0.08825,0.89158,0.01583,531.85000,20,3,ham10000,sex,Gender,HAM
+Classwise CP,2.51517,0.43360,0.89441,0.01183,509.50000,20,3,ham10000,sex,Gender,HAM
+Known-group CP,1.53585,0.09269,0.89110,0.01626,506.85000,20,3,ham10000,sex,Gender,HAM
+AFCP,1.62776,0.16388,0.89858,0.01853,524.50000,20,3,ham10000,sex,Gender,HAM
+FaReG,1.70782,0.11927,0.91460,0.01714,527.90000,20,3,ham10000,sex,Gender,HAM
+Ours,1.84316,0.15189,0.91901,0.01155,527.80000,20,3,ham10000,sex,Gender,HAM
+Standard CP,3.47080,0.18446,0.87556,0.03004,478.65000,20,4,isic,sex,Gender,ISIC
+Classwise CP,4.86859,0.39154,0.86790,0.03249,294.30000,20,4,isic,sex,Gender,ISIC
+Known-group CP,3.80747,0.23821,0.78041,0.04652,60.20000,20,4,isic,sex,Gender,ISIC
+AFCP,3.86242,0.32158,0.88066,0.03003,333.65000,20,4,isic,sex,Gender,ISIC
+FaReG,4.20476,0.36716,0.89565,0.03250,386.20000,20,4,isic,sex,Gender,ISIC
+Ours,4.14287,0.24001,0.90528,0.02737,474.30000,20,4,isic,sex,Gender,ISIC
+Standard CP,2.09777,0.01776,0.88209,0.01174,483.25000,20,5,mimic_care,gender_age,Gender-age,MIMIC-IV
+Classwise CP,2.12553,0.02544,0.88256,0.00972,512.30000,20,5,mimic_care,gender_age,Gender-age,MIMIC-IV
+Known-group CP,2.09051,0.02087,0.88575,0.00856,537.05000,20,5,mimic_care,gender_age,Gender-age,MIMIC-IV
+AFCP,2.19153,0.01673,0.88373,0.01200,520.80000,20,5,mimic_care,gender_age,Gender-age,MIMIC-IV
+FaReG,2.29321,0.03635,0.90298,0.01375,500.15000,20,5,mimic_care,gender_age,Gender-age,MIMIC-IV
+Ours,2.27090,0.02474,0.91765,0.00953,370.15000,20,5,mimic_care,gender_age,Gender-age,MIMIC-IV

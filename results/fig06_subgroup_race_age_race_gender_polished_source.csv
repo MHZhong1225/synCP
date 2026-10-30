@@ -1,0 +1,13 @@
+method,avg_set_size,avg_set_size_std,worst_subgroup_coverage,worst_subgroup_coverage_std,support,observations,panel_index,family,attribute,panel_title,dataset
+Standard CP,2.09777,0.01776,0.80876,0.03402,46.90000,20,0,mimic_care,race_age,Race-age,MIMIC-IV
+Classwise CP,2.12553,0.02544,0.80437,0.03696,57.05000,20,0,mimic_care,race_age,Race-age,MIMIC-IV
+Known-group CP,2.09051,0.02087,0.82380,0.04381,133.85000,20,0,mimic_care,race_age,Race-age,MIMIC-IV
+AFCP,2.19153,0.01673,0.81231,0.03557,54.45000,20,0,mimic_care,race_age,Race-age,MIMIC-IV
+FaReG,2.29321,0.03635,0.83565,0.03795,47.45000,20,0,mimic_care,race_age,Race-age,MIMIC-IV
+Ours,2.27090,0.02474,0.85073,0.02744,43.20000,20,0,mimic_care,race_age,Race-age,MIMIC-IV
+Standard CP,2.09777,0.01776,0.81987,0.02507,69.95000,20,1,mimic_care,race_gender,Race-gender,MIMIC-IV
+Classwise CP,2.12553,0.02544,0.82376,0.02970,72.50000,20,1,mimic_care,race_gender,Race-gender,MIMIC-IV
+Known-group CP,2.09051,0.02087,0.84372,0.03809,162.55000,20,1,mimic_care,race_gender,Race-gender,MIMIC-IV
+AFCP,2.19153,0.01673,0.82323,0.02978,68.70000,20,1,mimic_care,race_gender,Race-gender,MIMIC-IV
+FaReG,2.29321,0.03635,0.84200,0.03982,73.70000,20,1,mimic_care,race_gender,Race-gender,MIMIC-IV
+Ours,2.27090,0.02474,0.86970,0.02288,85.45000,20,1,mimic_care,race_gender,Race-gender,MIMIC-IV
