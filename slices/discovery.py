@@ -531,7 +531,6 @@ def _cp_score_features(
             1.0 - margin,
             normalized_entropy,
             aps_top,
-            top1,
         ]
     )
 
