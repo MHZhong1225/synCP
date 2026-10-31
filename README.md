@@ -11,6 +11,7 @@ slices/        latent subgroup discovery utilities
 data/          dataset loaders and feature/prediction cache helpers
 experiments/   entry points for synthetic, image, and MIMIC ED-to-ICU experiments
 runners/       benchmark runners that operate on cached predictions/features
+results/       experiment outputs, figure source data, summaries, and reproducibility npz
 ```
 
 
@@ -92,4 +93,3 @@ python -m runners.run_final_consensus_benchmark \
 ```
 
 The benchmark writes CSV summaries with marginal coverage, average set size, worst-class coverage, worst known-group coverage, known-group coverage gaps, and maximum undercoverage gap.
-
